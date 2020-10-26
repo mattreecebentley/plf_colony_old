@@ -1,0 +1,1816 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<html>
+<head>
+	<meta content="True" name="HandheldFriendly">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0">
+	<meta name="viewport" content="width=device-width">
+  <meta content="text/html; charset=UTF-8" http-equiv="content-type">
+  <meta name="description" content="A highest-performance C++ template-based data container for high-modification scenarios with unordered data.">
+  <meta name="keywords"
+  content="C++, C, vector, colony, plf::colony, speed, OO, containers, optimize, performance, pointer, iterator, invalidation, benchmarks, results, benchmark, vs, versus, std::list, std::map, std::multiset, std::vector, std::deque, vector, deque, packed array">
+  <title>PLF Library - colony</title>
+  <link rel="stylesheet" type="text/css" href="style.css">
+  <link rel="home" href="https://plflib.org">
+</head>
+
+<body>
+<a href="./">Home</a>
+
+<h1>PLF C++ Library - plf::colony</h1>
+<ul>
+  <li><a href="#intro">Intro</a></li>
+  <li><a href="#details">Implementation</a></li>
+  <li><a href="#license">License</a></li>
+  <li><a href="#download">Download</a></li>
+  <li><a href="#functions">Function Descriptions and Syntax</a></li>
+  <li><a href="#benchmarks">Benchmarks</a></li>
+  <li><a href="#faq">Frequently-asked Questions</a></li>
+  <li><a href="#version">Version History</a></li>
+  <li><a href="#contact">Contact</a></li>
+</ul>
+
+<h2><a id="intro"></a>Introduction</h2>
+
+<p>plf::colony is the highest-performance C++ template-based data container for high-modification scenarios with unordered data. All elements within a colony have a stable memory location, meaning that pointers/iterators to non-erased elements are valid regardless of insertions/erasures to the container. Specifically the container provides better performance than other std:: library containers when:</p>
+<ol type="a">
+  <li>Insertion order is unimportant,</li>
+  <li>Insertions and erasures to the container are occurring frequently in
+    realtime i.e. in performance-critical code, <i><b>and/or</b></i> </li>
+  <li>Insertions and erasures to the container may not invalidate pointers/iterators to non-erased elements.</li>
+</ol>
+
+<p>While the benchmarks later on the page are a better way to get a feel
+for the performance benefits, the general performance characteristics are:</p>
+<ul>
+  <li><i>Singular, unordered insertion</i>: better than any std:: library
+    container.</li>
+  <li><i>Erasure</i>: better than any std:: library container.</li>
+  <li><i>Iteration</i>: better than any std:: library container capable of
+    preserving pointer/iterator validity post-erasure/insertion (e.g. map, multiset,
+    list). Some variance here for scalar types and between different CPUs obviously. Where pointer/iterator validity is unimportant, better than any std:: library container except deque and vector.</li>
+</ul>
+
+<p>As explored further in the benchmarks there are some <a
+href="benchmarks_haswell_gcc.htm#comparative_tests">vector/deque modifications</a> which can outperform
+colony during iteration while maintaining pointer validity, but at a cost to
+usability and memory usage and without colony's insert/erasure advantages. Colony's other advantages include freeing and/or recycling of unused memory on-the-fly, guaranteed stability of
+pointers/references/iterators to non-erased elements (which makes programming
+with containers of inter-related data structures faster and easier), and
+broad cross-compiler support.</p>
+
+<p>A colony's structure can be reasonably compared to a "bucket array",
+where each element location can be emptied and skipped over. Unlike a bucket
+array it does not use keys, iterates faster due to the use of an advanced skipfield type (previously a <a
+href="skipfield_comparison.htm">high complexity jump-counting pattern</a>, now a <a href="matt_bentley_-_the_low_complexity_jump-counting_pattern.pdf">low complexity jump-counting pattern</a>) instead of a
+boolean field, and frees or recycles unused memory from erased elements
+on-the-fly. It was initially developed predominantly for game
+development, so is designed to favour larger-than-scalar-type (structs/classes of
+greater-than 128 bits total) performance over scalar-type (float, int, etc)
+performance. It also supports over-aligned types.</p>
+
+
+<h2><a id="motivation"></a>Motivation</h2>
+
+<p><i>Note: initial motivation for the project came from video game engine
+development. Since this point it has become a more generalized container.
+Nevertheless, the initial motivation is presented below.</i><br>
+When working on video game engines we are predominantly dealing with
+collections of data where:</p>
+<ol type="a">
+  <li>Elements within data collections refer to elements within other data
+    collections (through a variety of methods - indices, pointers, etc). An
+    example is a game entity referring to both a texture object and collision
+    blocks, as well as sound data. These references must stay valid throughout
+    the course of the game/level. For this reason, any container (or use of a
+    container) which causes pointer or index invalidation can create
+    difficulties or necessitate workarounds.</li>
+  <li>Order is unimportant for the most part. The majority of data collections
+    are simply iterated over, transformed, referred to and utilized with no
+    regard to order.</li>
+  <li>Erasing or otherwise removing or deactivating objects occurs frequently
+    in-game and in realtime (though often erasures will be implemented to occur
+    at the end of a frame due to multithreading concerns). An example could be
+    destroying a wall, or a game enemy. For this reason methods of erasure
+    which create strong performance penalties are avoided.</li>
+  <li>Creating new objects and adding them into the gameworld on-the-fly is
+    also common - for example, a tree which drops leaves every so often, or a
+    quadtree.</li>
+  <li>We don't always know in advance how many elements there will be in a
+    container at the beginning of development, or even at the beginning of a
+    level during playback - an example of this being a MMORPG (massively
+    multiplayer online role-playing game). In a MMORPG the number of game
+    entities fluctuates based on how many players are playing, though there may
+    be maximum capacity limits. Genericized game engines in particular have to
+    adapt to considerably different user requirements and scopes. For this
+    reason extensible containers which can expand and contract in realtime are
+    usually necessary.</li>
+  <li>Depending on the complexity and scope of any given game, we can be
+    dealing with anywhere between 10 and 100000 objects in a given area. We are
+    not typically dealing with the types of capacities necessitated by
+    large-scale mathematical or statistical applications.</li>
+  <li>For performance reasons, memory storage which is more-or-less contiguous
+    is preferred. Lists, vectors of pointers to dynamically-allocated objects,
+    and maps as implemented in the standard library are unusable.</li>
+  <li>Memory wastage is avoided, and in particular, any container which
+    allocates upon initialisation tends to be avoided as this can incur
+    purposeless memory and performance costs.</li>
+</ol>
+<br>
+
+
+<p>To meet these requirements, game developers tend to either (a) develop their
+own custom containers for given scenario or (b) develop workarounds for the
+failings of std::vector. These workarounds are many and varied, but the most
+common are probably:</p>
+<ol>
+  <li>Using a boolean flag (or similar) to indicate the inactivity of an object
+    (as opposed to actually erasing from the vector). When erasing, one simply
+    adjusts the boolean flag, and when iterating, items with the adjusted
+    boolean flag are skipped. External elements refer to elements within the
+    container via indexes rather than pointers (which can be invalidated upon
+    insertion).
+    <p>Advantages: Fast erasure.</p>
+    <p>Disadvantages: Slow to iterate due to branching and unpredictable number of skipfield checks between any two non-skipped elements.</p>
+  </li>
+  <li>Utilising a vector (or array) of data with a secondary vector (or array) of indexes. When
+    erasing, the erasure occurs in the vector of indexes, not the vector of
+    data, and when iterating, one iterates over the vector of indexes, then
+    accessing the data from the vector of data via the index.
+    <p>Advantages: Faster iteration.</p>
+    <p>Disadvantages: Erasure still incurs some reallocation cost, can increase
+    jitter. Insertion comparatively slow.</p>
+  </li>
+  <li>Combining a swap-and-pop mechanism with some form of dereferenced lookup
+    system to enable contiguous element iteration (sometimes known as a <a
+    href="http://bitsquid.blogspot.ca/2011/09/managing-decoupling-part-4-id-lookup.html">'packed
+    array'</a>, various other names including "slot map"). In this case when erasing we swap the
+    back element from the vector of elements with the element being erased,
+    then pop the (swapped) back element. When iterating over the data we simply
+    iterate through the vector of elements. However to maintain valid external
+    links to elements (which may be moved at any time) we must also maintain a
+    stable vector of indexes (or similar) and update the index numbers
+    corresponding with the element being erased and the element being moved. In
+    this case external objects referring to elements within the container must
+    store a pointer or index to the index for the element in question. There are many
+    variants of this method. It is more useful when the
+    container's data is mostly being iterated over with fewer references to the
+    individual elements from outside objects, and less insertion/erasure.
+    <p>Advantages: Iteration is at standard vector speed.</p>
+    <p>Disadvantages: Erase could be slow if objects are large and swap cost is
+    therefore large. Insertion cost is larger than other techniques. All
+    references to elements incur additional costs due to a two-fold reference
+    mechanism.</p>
+  </li>
+</ol>
+<br>
+
+
+<p>All three techniques have the disadvantage of slow singular insertions, and
+the first two will also continually expand memory usage when erasing and
+inserting over periods of time. The third deals better with this scenario as it
+swaps from the back rather than leaving gaps in the elements vector, however
+will suffer in performance if elements within the container are heavily
+referred to by external objects/elements.</p>
+
+<p>Colony is an attempt to bring a more generic solution to this domain. It has
+the advantage of good iteration speed while maintaining a similar erasure speed
+to the boolean technique described above (faster for multiple consecutive erasures), and without causing pointer
+invalidation upon either erasure or insertion. It's insertion speed is also
+much faster than a vector's. Memory from erased elements is either reused by
+subsequent insertions or released to the OS on-the-fly. It achieves these ends
+via the mechanisms described in the Intro above, examined further in the Implementation section below.</p>
+
+<p>More data on the performance characteristics of the colony versus other
+containers and workarounds can be found in the <a href="#benchmarks">benchmarks
+section</a>, read below to get an understanding of the mechanics.</p>
+
+
+<h2><a id="details"></a>Implementation</h2>
+
+<p>Any colony implementation is defined by 3 different aspects:</p>
+<ul>
+<li>A sequence of memory blocks with a growth factor</li>
+<li>A skipfield to jump over erased elements (removing the need for reallocation upon erasure or insertion)</li>
+<li>A mechanism for remembering the locations of erased elements, in order to reuse those memory locations upon subsequent insertion</li>
+</ul>
+
+<p>For the first of these, plf::colony uses a <a href="chained_group_allocation_pattern.htm">chained-group memory allocation
+pattern</a> with a growth factor of 2, which can otherwise be described as a doubly-linked list of element
+"groups" - memory blocks with additional structural metadata, including
+in this case per-memory-block Low complexity jump-counting skipfields. A growth factor of 2
+tends to gives the best performance in the majority of scenarios (hence why it is
+also used for the majority of vector implementations). Colony's minimum and maximum
+memory block sizes can also be adjusted to suit individual use-cases. Using a
+multiple-memory-block approach removes the necessity for data reallocation upon
+insertion (compared to a vector). Because data is not reallocated, all
+references, pointers and iterators to container elements stay valid
+post-insertion.</p>
+
+<p>For the second of these aspects, plf::colony uses an advanced skipfield type called a <a href="matt_bentley_-_the_low_complexity_jump-counting_pattern.pdf">low complexity jump-counting pattern</a> (versions prior to v5.0 utilized an advanced jump-counting skipfield pattern). The third aspect is currently an intrusive list of groups containing erased elements, combined with per-group free-lists of skipblocks. A skipblock, in colony terminology, refers to a sequence of contiguous erased elements - including sequences of only a single erased element. Versions prior to v5.0 utilized free lists of individual skipped elements, and versions prior to v4.5 utilized a stack of pointers to individual skipped elements.</p>
+
+<p>Due to a std::vector being the most widely-used and commonly-understood of
+the std:: library containers, we will contrast the storage mechanisms of a
+colony with that of a vector, starting with insertion:</p>
+<img src="vector_addition.gif" alt="Visual demonstration of inserting to a full vector" height="auto" width="100%">
+<img src="colony_addition.gif" alt="Visual demonstration of inserting to a full colony" height="auto" width="100%">
+
+<p>The lack of reallocation is also why insertion into a colony is faster than
+insertion into a std::vector. Now we look at erasure. When an element is erased
+in a std::vector, the following happens:</p>
+
+<p><img src="vector_erasure.gif"
+alt="Visual demonstration of randomly erasing from a vector" height="auto" width="100%"> </p>
+
+<p>When an element is erased in a colony, this happens:</p>
+<img src="colony_erasure.gif"
+alt="Visual demonstration of randomly erasing from a colony"  height="auto" width="100%">
+
+<p>This is why a colony has a performance advantage over std::vector when
+erasing.</p>
+
+<p>Upon subsequent insertions to a colony post-erasure, colony will check to
+see if its intrusive list of groups-with-erasures is empty (described earlier). If empty, it inserts to the
+end of the colony, creating a new group if the last group is already full. If the intrusive list of groups-with-erasures isn't empty, the colony takes the first group within that list and re-uses the first memory location from the free list of skipblocks within that group. If you erase all elements in any given group in a colony, the group is removed from the colony's chain of groups and released to the OS, and removed from the intrusive list of groups-with-erasures.</p>
+
+
+<h2><a id="license" name="license"></a>License</h2>
+
+<p>plf::colony is under a permissive <a
+href="https://en.wikipedia.org/wiki/Zlib_License">zlib license</a>. This means:
+Software is used on 'as-is' basis. It can be modified and used in commercial
+software. Authors are not liable for any damages arising from its use. The
+distribution of a modified version of the software is subject to the following
+restrictions:</p>
+<ul>
+  <li>The authorship of the original software must not be misrepresented,</li>
+  <li>Altered source versions must not be misrepresented as being the original
+    software, and</li>
+  <li>The license notice must not be removed from source distributions.</li>
+</ul>
+
+
+<h2><a id="download"></a>Download</h2>
+
+<p>Download <a href="plf_colony_21-09-2020.zip">here</a> (29kb zip file) or
+view the <a
+href="https://github.com/mattreecebentley/plf_colony">repository</a><br>
+<br>
+The colony library is a simple .h header file, to be included with a #include
+command.<br>
+In addition if you are interested in benchmarking you can also download the <a
+href="plf_benchmark_suite_28-06-2020.zip">plf benchmark suite</a> (64kb zip
+file), which includes plf::nanotimer.<br>
+<br>A <a href="https://conan.io/">conan</a> package for colony has been made by Alain Galvan and is available <a href="https://github.com/alaingalvan/conan-plf-colony">here</a>.<br>
+</p>
+
+<h2><a id="functions"></a>Function Descriptions and syntax</h2>
+
+<p>Colony meets the requirements of the C++ <a
+href="https://en.cppreference.com/w/cpp/named_req/Container">Container</a>, <a
+href="https://en.cppreference.com/w/cpp/named_req/AllocatorAwareContainer">AllocatorAwareContainer</a>,
+and <a
+href="https://en.cppreference.com/w/cpp/named_req/ReversibleContainer">ReversibleContainer</a>
+concepts.</p>
+
+<p>For the most part the syntax and semantics of colony functions are very
+similar to all std:: c++ libraries. Formal description is as follows:</p>
+<code>template &lt;class T, class Allocator = std::allocator&lt;T&gt;, typename
+Skipfield_Type = unsigned short&gt; class colony</code>
+
+<p><code><b>T</b></code> - the element type. In general T must meet the
+requirements of <a
+href="https://en.cppreference.com/w/cpp/named_req/Erasable">Erasable</a>, <a
+href="https://en.cppreference.com/w/cpp/named_req/CopyAssignable">CopyAssignable</a>
+and <a
+href="https://en.cppreference.com/w/cpp/named_req/CopyConstructible">CopyConstructible</a>.<br>
+However, if emplace is utilized to insert elements into the colony, and no
+functions which involve copying or moving are utilized, T is only required to
+meet the requirements of <a
+href="https://en.cppreference.com/w/cpp/named_req/Erasable">Erasable</a>.<br>
+If move-insert is utilized instead of emplace, T must also meet the
+requirements of <a href="https://en.cppreference.com/w/cpp/named_req/MoveConstructible">MoveConstructible</a>.<br>
+<br>
+<code><b>Allocator</b></code> - an allocator that is used to acquire memory to
+store the elements. The type must meet the requirements of <a
+href="https://en.cppreference.com/w/cpp/named_req/Allocator">Allocator</a>. The
+behaviour is undefined if <code>Allocator::value_type</code> is not the same as
+T.<br>
+<br>
+<code><b>T_skipfield_type</b></code> - an unsigned integer type. This type is
+used to form the skipfield which skips over erased T elements. The maximum size
+of element memory blocks is constrained by this type's bit-depth (due to the
+nature of a jump-counting skipfield). As an example, <code>unsigned
+short</code> on most platforms is 16-bit which thereby constrains the size of
+individual memory blocks to a maximum of 65535 elements. <code>unsigned
+short</code> has been found to be the optimal type for performance based on
+benchmarking. However this template parameter is important for a variety of
+scenarios relating to performance or memory usage. In the case of small
+collections (e.g. &lt; 512 elements) in a memory-constrained environment, it is
+useful to reduce the memory usage of the skipfield by reducing the skipfield
+bit depth to a Uint8 type. In addition the reduced skipfield size will reduce
+cache saturation in this case without impacting iteration speed due to the low
+element total. In the case of very large collections (millions) and where
+memory usage is not a concern, changing the skipfield bitdepth to a larger type
+leads to slightly increased iteration performance (offset by decreased erasure
+and insertion performance) due to the larger memory block sizes made possible
+by the larger bit depth. Since these scenarios are on a per-case basis, it is
+best to leave the control in the user's hands.</p>
+
+<h4>Basic example of usage</h4>
+
+<div style="background: #ffffff; overflow:auto;width:auto;border:solid gray;border-width:.1em .1em .1em .8em;padding:.2em .6em;">
+<pre style="margin: 0; line-height: 125%"><code><span style="color: #557799">#include &lt;iostream&gt;</span>
+<span style="color: #557799">#include "plf_colony.h"</span>
+
+<span style="color: #333399; font-weight: bold">int</span> <span style="color: #0066BB; font-weight: bold">main</span>(<span style="color: #333399; font-weight: bold">int</span> argc, <span style="color: #333399; font-weight: bold">char</span> <span style="color: #333333">**</span>argv)
+{
+  plf<span style="color: #333333">::</span>colony<span style="color: #333333">&lt;</span><span style="color: #333399; font-weight: bold">int</span><span style="color: #333333">&gt;</span> i_colony;
+
+  <span style="color: #888888">// Insert 100 ints:</span>
+  <span style="color: #008800; font-weight: bold">for</span> (<span style="color: #333399; font-weight: bold">int</span> i <span style="color: #333333">=</span> <span style="color: #0000DD; font-weight: bold">0</span>; i <span style="color: #333333">!=</span> <span style="color: #0000DD; font-weight: bold">100</span>; <span style="color: #333333">++</span>i)
+  {
+    i_colony.insert(i);
+  }
+
+  <span style="color: #888888">// Erase half of them:</span>
+  <span style="color: #008800; font-weight: bold">for</span> (plf<span style="color: #333333">::</span>colony<span style="color: #333333">&lt;</span><span style="color: #333399; font-weight: bold">int</span><span style="color: #333333">&gt;::</span>iterator it <span style="color: #333333">=</span> i_colony.begin(); it <span style="color: #333333">!=</span> i_colony.end(); <span style="color: #333333">++</span>it)
+  {
+    it <span style="color: #333333">=</span> i_colony.erase(it);
+  }
+
+  <span style="color: #888888">// Total the remaining ints:</span>
+  <span style="color: #333399; font-weight: bold">int</span> total <span style="color: #333333">=</span> <span style="color: #0000DD; font-weight: bold">0</span>;
+
+  <span style="color: #008800; font-weight: bold">for</span> (plf<span style="color: #333333">::</span>colony<span style="color: #333333">&lt;</span><span style="color: #333399; font-weight: bold">int</span><span style="color: #333333">&gt;::</span>iterator it <span style="color: #333333">=</span> i_colony.begin(); it <span style="color: #333333">!=</span> i_colony.end(); <span style="color: #333333">++</span>it)
+  {
+    total <span style="color: #333333">+=</span> <span style="color: #333333">*</span>it;
+  }
+
+  std<span style="color: #333333">::</span>cout <span style="color: #333333">&lt;&lt;</span> <span style="background-color: #fff0f0">"Total: "</span> <span style="color: #333333">&lt;&lt;</span> total <span style="color: #333333">&lt;&lt;</span> std<span style="color: #333333">::</span>endl;
+  std<span style="color: #333333">::</span>cin.get();
+  <span style="color: #008800; font-weight: bold">return</span> <span style="color: #0000DD; font-weight: bold">0</span>;
+} </code></pre>
+</div>
+
+<h4>Example demonstrating pointer stability</h4>
+
+<div style="background: #ffffff; overflow:auto;width:auto;border:solid gray;border-width:.1em .1em .1em .8em;padding:.2em .6em;">
+<pre style="margin: 0; line-height: 125%"><code><span style="color: #557799">#include &lt;iostream&gt;</span>
+<span style="color: #557799">#include "plf_colony.h"</span>
+
+<span style="color: #333399; font-weight: bold">int</span> <span style="color: #0066BB; font-weight: bold">main</span>(<span style="color: #333399; font-weight: bold">int</span> argc, <span style="color: #333399; font-weight: bold">char</span> <span style="color: #333333">**</span>argv)
+{
+  plf<span style="color: #333333">::</span>colony<span style="color: #333333">&lt;</span><span style="color: #333399; font-weight: bold">int</span><span style="color: #333333">&gt;</span> i_colony;
+  plf<span style="color: #333333">::</span>colony<span style="color: #333333">&lt;</span><span style="color: #333399; font-weight: bold">int</span><span style="color: #333333">&gt;::</span>iterator it;
+  plf<span style="color: #333333">::</span>colony<span style="color: #333333">&lt;</span><span style="color: #333399; font-weight: bold">int</span> <span style="color: #333333">*&gt;</span> p_colony;
+  plf<span style="color: #333333">::</span>colony<span style="color: #333333">&lt;</span><span style="color: #333399; font-weight: bold">int</span> <span style="color: #333333">*&gt;::</span>iterator p_it;
+
+  <span style="color: #888888">// Insert 100 ints to i_colony and pointers to those ints to p_colony:</span>
+  <span style="color: #008800; font-weight: bold">for</span> (<span style="color: #333399; font-weight: bold">int</span> i <span style="color: #333333">=</span> <span style="color: #0000DD; font-weight: bold">0</span>; i <span style="color: #333333">!=</span> <span style="color: #0000DD; font-weight: bold">100</span>; <span style="color: #333333">++</span>i)
+  {
+    it <span style="color: #333333">=</span> i_colony.insert(i);
+    p_colony.insert(<span style="color: #333333">&amp;</span>(<span style="color: #333333">*</span>it));
+  }
+
+  <span style="color: #888888">// Erase half of the ints:</span>
+  <span style="color: #008800; font-weight: bold">for</span> (it <span style="color: #333333">=</span> i_colony.begin(); it <span style="color: #333333">!=</span> i_colony.end(); <span style="color: #333333">++</span>it)
+  {
+    it <span style="color: #333333">=</span> i_colony.erase(it);
+  }
+
+  <span style="color: #888888">// Erase half of the int pointers:</span>
+  <span style="color: #008800; font-weight: bold">for</span> (p_it <span style="color: #333333">=</span> p_colony.begin(); p_it <span style="color: #333333">!=</span> p_colony.end(); <span style="color: #333333">++</span>p_it)
+  {
+    p_it <span style="color: #333333">=</span> p_colony.erase(p_it);
+  }
+
+  <span style="color: #888888">// Total the remaining ints via the pointer colony (pointers will still be valid even after insertions and erasures):</span>
+  <span style="color: #333399; font-weight: bold">int</span> total <span style="color: #333333">=</span> <span style="color: #0000DD; font-weight: bold">0</span>;
+
+  <span style="color: #008800; font-weight: bold">for</span> (p_it <span style="color: #333333">=</span> p_colony.begin(); p_it <span style="color: #333333">!=</span> p_colony.end(); <span style="color: #333333">++</span>p_it)
+  {
+    total <span style="color: #333333">+=</span> <span style="color: #333333">*</span>(<span style="color: #333333">*</span>p_it);
+  }
+
+  std<span style="color: #333333">::</span>cout <span style="color: #333333">&lt;&lt;</span> <span style="background-color: #fff0f0">"Total: "</span> <span style="color: #333333">&lt;&lt;</span> total <span style="color: #333333">&lt;&lt;</span> std<span style="color: #333333">::</span>endl;
+  
+  <span style="color: #008800; font-weight: bold">if</span> (total <span style="color: #333333">==</span> <span style="color: #0000DD; font-weight: bold">2500</span>)
+  {
+    std<span style="color: #333333">::</span>cout <span style="color: #333333">&lt;&lt;</span> <span style="background-color: #fff0f0">"Pointers still valid!"</span> <span style="color: #333333">&lt;&lt;</span> std<span style="color: #333333">::</span>endl;
+  }
+  
+  std<span style="color: #333333">::</span>cin.get();
+  <span style="color: #008800; font-weight: bold">return</span> <span style="color: #0000DD; font-weight: bold">0</span>;
+} </code></pre>
+</div>
+
+<h4>Iterator Invalidation</h4>
+
+<table border="1">
+  <tbody>
+    <tr>
+      <td>All read-only operations, swap, std::swap, free_unused_memory</td>
+      <td>Never</td>
+    </tr>
+    <tr>
+      <td>clear, sort, reinitialize, operator =</td>
+      <td>Always</td>
+    </tr>
+    <tr>
+      <td>reserve, shrink_to_fit</td>
+      <td>Only if capacity is changed</td>
+    </tr>
+    <tr>
+      <td>change_group_sizes, change_minimum_group_size,
+        change_maximum_group_size</td>
+      <td>Only if supplied minimum group size is larger than smallest group in
+        colony, or supplied maximum group size is smaller than largest group in
+        colony.</td>
+    </tr>
+    <tr>
+      <td>erase</td>
+      <td>Only for the erased element. If an iterator is == end() it may be
+        invalidated if the last element in the colony is erased, in some cases.
+        If a reverse_iterator is == rend() it may be invalidated if the first
+        element in the colony is erased, in some cases.</td>
+    </tr>
+    <tr>
+      <td>insert, emplace</td>
+      <td>If an iterator is == end() it may be invalidated by a subsequent
+        insert/emplace, in some cases.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h4>Member types</h4>
+
+<table border="1">
+  <tbody>
+    <tr>
+      <td><b>Member type</b></td>
+      <td><b>Definition</b></td>
+    </tr>
+    <tr>
+      <td><code>value_type</code></td>
+      <td><code>T</code></td>
+    </tr>
+    <tr>
+      <td><code>allocator_type</code></td>
+      <td><code>Allocator</code></td>
+    </tr>
+    <tr>
+      <td><code>skipfield_type</code> </td>
+      <td><code>T_skipfield_type</code> </td>
+    </tr>
+    <tr>
+      <td><code>size_type</code></td>
+      <td><code>Allocator::size_type (pre-c++11)<br>
+        std::allocator_traits&lt;Allocator&gt;::size_type
+      (post-c++11)</code></td>
+    </tr>
+    <tr>
+      <td><code>difference_type</code></td>
+      <td><code>Allocator::difference_type (pre-c++11)<br>
+        std::allocator_traits&lt;Allocator&gt;::difference_type
+        (post-c++11)</code></td>
+    </tr>
+    <tr>
+      <td><code>reference</code></td>
+      <td><code>Allocator::reference (pre-c++11)<br>
+        value_type &amp; (post-c++11)</code></td>
+    </tr>
+    <tr>
+      <td><code>const_reference</code></td>
+      <td><code>Allocator::const_reference (pre-c++11)<br>
+        const value_type &amp; (post-c++11)</code></td>
+    </tr>
+    <tr>
+      <td><code>pointer</code></td>
+      <td><code>Allocator::pointer (pre-c++11)<br>
+        std::allocator_traits&lt;Allocator&gt;::pointer (post-c++11)</code></td>
+    </tr>
+    <tr>
+      <td><code>const_pointer</code></td>
+      <td><code>Allocator::const_pointer (pre-c++11)<br>
+        std::allocator_traits&lt;Allocator&gt;::const_pointer
+        (post-c++11)</code></td>
+    </tr>
+    <tr>
+      <td><code>iterator</code></td>
+      <td><code>BidirectionalIterator</code></td>
+    </tr>
+    <tr>
+      <td><code>const_iterator</code></td>
+      <td><code>Constant BidirectionalIterator</code></td>
+    </tr>
+    <tr>
+      <td><code>reverse_iterator</code></td>
+      <td><code>BidirectionalIterator</code></td>
+    </tr>
+    <tr>
+      <td><code>const_reverse_iterator</code></td>
+      <td><code>Constant BidirectionalIterator</code></td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>Constructors</h3>
+
+<table border="1">
+  <tbody>
+    <tr>
+      <td>standard</td>
+      <td><code>colony()<br><br>
+		explicit colony(const allocator_type &amp;alloc)</code></td>
+    </tr>
+    <tr>
+      <td>fill</td>
+      <td><code>colony(size_type n, Skipfield_type min_group_size = 8,
+        Skipfield_type max_group_size =
+        std::numeric_limits&lt;Skipfield_type&gt;::max(), const allocator_type
+        &amp;alloc = allocator_type())<br><br>
+        explicit colony(size_type n, const value_type &amp;element,
+        Skipfield_type min_group_size = 8, Skipfield_type max_group_size =
+        std::numeric_limits&lt;Skipfield_type&gt;::max(), const allocator_type
+        &amp;alloc = allocator_type()) </code> </td>
+    </tr>
+    <tr>
+      <td>range</td>
+      <td><code>template&lt;typename InputIterator&gt; colony(const
+        InputIterator &amp;first, const InputIterator &amp;last, Skipfield_type
+        min_group_size = 8, Skipfield_type max_group_size =
+        std::numeric_limits&lt;Skipfield_type&gt;::max(), const allocator_type
+        &amp;alloc = allocator_type())<br>
+        </code> </td>
+    </tr>
+    <tr>
+      <td>copy</td>
+      <td><code>colony(const colony &amp;source)<br><br>
+      colony(const colony &amp;source, const allocator_type &amp;alloc)
+		</code> </td>
+    </tr>
+    <tr>
+      <td>move <font size="2">(C++11 and upwards)</font></td>
+      <td><code>colony(colony &amp;&amp;source) noexcept<br><br>
+      colony(colony &amp;&amp;source, allocator_type &amp;alloc)</code><br>
+      <p><i>Note: postcondition state of source colony is the same as that of an empty colony.</i><p>
+		  </td>
+    </tr>
+    <tr>
+      <td>initializer list</td>
+      <td><code>colony(const std::initializer_list&lt;value_type&gt;
+        &amp;element_list, Skipfield_type min_group_size = 8, Skipfield_type
+        max_group_size = std::numeric_limits&lt;Skipfield_type&gt;::max(),
+        const allocator_type &amp;alloc = allocator_type()) </code> </td>
+    </tr>
+  </tbody>
+</table>
+
+<h5>Some constructor usage examples</h5>
+<ul>
+  <li><code>colony&lt;T&gt; a_colony</code>
+    <p>Default constructor - default minimum group size is 8, default maximum
+    group size is std::numeric_limits&lt;Skipfield_type&gt;::max() (typically
+    65535). You cannot set the group sizes from the constructor in this
+    scenario, but you can call the change_group_sizes() member function after
+    construction has occurred. <br>
+    Example: <code style="color: brown">plf::colony&lt;int&gt;
+    int_colony;</code> </p>
+  </li>
+  <li><code>colony&lt;T, the_allocator&lt;T&gt; &gt; a_colony(const
+    allocator_type &amp;alloc = allocator_type())</code>
+    <p>Default constructor, but using a custom memory allocator e.g. something
+    other than std::allocator. <br>
+    Example: <code style="color: brown">plf::colony&lt;int,
+    tbb::allocator&lt;int&gt; &gt; int_colony;</code> <br>
+    Example2: <br>
+    <code style="color: brown">// Using an instance of an allocator as well as
+    it's type<br>
+    tbb::allocator&lt;int&gt; alloc_instance;<br>
+    plf::colony&lt;int, tbb::allocator&lt;int&gt; &gt;
+    int_colony(alloc_instance);</code> </p>
+  </li>
+  <li><code>colony&lt;T&gt; colony(size_type n, Skipfield_type min_group_size =
+    8, Skipfield_type max_group_size =
+    std::numeric_limits&lt;Skipfield_type&gt;::max())</code>
+    <p>Fill constructor with value_type unspecified, so the value_type's
+    default constructor is used. <code>n</code> specifies the number of
+    elements to create upon construction. If <code>n</code> is larger than
+    <code>min_group_size</code>, the size of the groups created will either be
+    <code>n</code> and <code>max_group_size</code>, depending on which is
+    smaller. <code>min_group_size</code> (i.e. the smallest possible number of
+    elements which can be stored in a colony group) can be defined, as can the
+    <code>max_group_size</code>. Setting the group sizes can be a performance
+    advantage if you know in advance roughly how many objects are likely to be
+    stored in your colony long-term - or at least the rough scale of storage.
+    If that case, using this can stop many small initial groups being
+    allocated (reserve() will achieve a similar result, but structurally at the moment is limited to allocating one group). <br>
+    Example: <code style="color: brown">plf::colony&lt;int&gt;
+    int_colony(62);</code> </p>
+  </li>
+  <li><code>colony&lt;T&gt; colony(const std::initializer_list&lt;value_type&gt; &amp;element_list,<br>
+    Skipfield_type min_group_size = 8, Skipfield_type max_group_size =
+    std::numeric_limits&lt;Skipfield_type&gt;::max())</code>
+    <p>Using an initialiser list to insert into the colony upon construction.
+    <br>
+    Example: <code style="color: brown">std::initializer_list&lt;int&gt;
+    &amp;el = {3, 5, 2, 1000};<br>
+    plf::colony&lt;int&gt; int_colony(el, 64, 512);</code> </p>
+  </li>
+  <li><code>colony&lt;T&gt; a_colony(const colony &amp;source)</code>
+    <p>Copy all contents from source colony, removes any empty (erased) element
+    locations in the process. Size of groups created is either the total size
+    of the source colony, or the maximum group size of the source colony,
+    whichever is the smaller. <br>
+    Example: <code style="color: brown">plf::colony&lt;int&gt;
+    int_colony_2(int_colony_1);</code> </p>
+  </li>
+  <li><code>colony&lt;T&gt; a_colony(colony &amp;&amp;source)</code>
+    <p>Move all contents from source colony, does not remove any erased element
+    locations or alter any of the source group sizes. Source colony is now empty and can be safely destructed or otherwise used.<br>
+    Example: <code style="color: brown">plf::colony&lt;int&gt; int_colony_1(50,
+    5, 512, 512); // Fill-construct a colony with min and max group sizes set at 512
+    elements. Fill with 50 instances of int = 5.<br>
+    plf::colony&lt;int&gt; int_colony_2(std::move(int_colony_1)); // Move all
+    data to int_colony_2. All of the above characteristics are now applied to
+    int_colony2.</code> </p>
+  </li>
+</ul>
+
+<h3>Iterators</h3>
+
+<p>All iterators are bidirectional but also provide &gt;, &lt;, &gt;= and &lt;=
+for convenience (for example, in <code>for</code> loops). Functions for
+iterator, reverse_iterator, const_iterator and const_reverse_iterator
+follow:</p>
+
+<p><code>operator * <br>
+operator -&gt; <br>
+operator ++<br>
+operator --<br>
+operator = <br>
+operator == <br>
+operator != <br>
+operator &lt;  <br>
+operator &gt;  <br>
+operator &lt;=  <br>
+operator &gt;=  <br>
+base() (reverse_iterator and const_reverse_iterator only)</code> </p>
+
+<p>All operators have O(1) amortised time-complexity. Originally there were +=,
+-=, + and - operators, however the time complexity of these varied from O(n) to
+O(1) depending on the underlying state of the colony, averaging in at O(log n).
+As such they were not includable in the iterator functions (as per C++
+standards). These have been transplanted to colony's advance(), next(), prev()
+and distance() member functions. Greater-than/lesser-than operator usage
+indicates whether an iterator is higher/lower in position compared to another
+iterator in the same colony (i.e. closer to the end/beginning of the colony).
+const_iterator is provided for both C++98, C++03 and C++11/14/etc compilers.</p>
+
+<h3>Member functions</h3>
+
+<h4>Insert</h4>
+
+<table border="1">
+  <tbody>
+    <tr>
+      <td>single element</td>
+      <td><code>iterator insert (value_type &amp;val)</code></td>
+    </tr>
+    <tr>
+      <td>fill</td>
+      <td><code>iterator insert (size_type n, value_type
+        &amp;val)</code></td>
+    </tr>
+    <tr>
+      <td>range</td>
+      <td><code>template &lt;class InputIterator&gt; iterator insert (InputIterator first, InputIterator last)</code></td>
+    </tr>
+    <tr>
+      <td>move</td>
+      <td><code>iterator insert (value_type&amp;&amp; val) <font
+        size="2">(C++11 and upwards)</font></code></td>
+    </tr>
+    <tr>
+      <td>initializer list</td>
+      <td><code>iterator insert (std::initializer_list&lt;value_type&gt; il)</code></td>
+    </tr>
+  </tbody>
+</table>
+<ul>
+  <li><code>iterator insert(const value_type &amp;element)</code>
+    <p>Inserts the element supplied to the colony, using the object's
+    copy-constructor. Will insert the element into a previously erased element
+    slot if one exists, otherwise will insert to back of colony. Returns
+    iterator to location of inserted element. Example:</p>
+    <code style="color: brown">plf::colony&lt;unsigned int&gt; i_colony;<br>
+    i_colony.insert(23);</code> </li>
+  <li><code>iterator insert(value_type &amp;&amp;element)</code>
+    <p>Moves the element supplied to the colony, using the object's
+    move-constructor. Will insert the element in a previously erased element
+    slot if one exists, otherwise will insert to back of colony. Returns
+    iterator to location of inserted element. Example:</p>
+    <p><code style="color: brown">std::string string1 = "Some text";<br>
+    <br>
+    plf::colony&lt;std::string&gt; data_colony;<br>
+    data_colony.insert(std::move(string1));</code> </p>
+  </li>
+  <li><code>void insert (const size_type n, const value_type
+    &amp;val)</code>
+    <p>Inserts <code>n</code> copies of <code>val</code> into the colony. Will
+    insert the element into a previously erased element slot if one exists,
+    otherwise will insert to back of colony. Example:</p>
+    <code style="color: brown">plf::colony&lt;unsigned int&gt; i_colony;<br>
+    i_colony.insert(10, 3);</code> </li>
+  <li><code>template &lt;class InputIterator&gt; void insert (const InputIterator &amp;first, const InputIterator &amp;last)</code>
+    <p>Inserts a series of <code>value_type</code> elements from an external
+    source into a colony holding the same <code>value_type</code> (e.g. int,
+    float, a particular class, etcetera). Stops inserting once it reaches
+    <code>last</code>. Example:</p>
+    <code style="color: brown">// Insert all contents of colony2 into
+    colony1:<br>
+    colony1.insert(colony2.begin(), colony2.end());</code> </li>
+  <li><code>void insert (const std::initializer_list&lt;value_type&gt;
+    &amp;il)</code>
+    <p>Copies elements from an initializer list into the colony. Will insert the element in a previously erased element
+    slot if one exists, otherwise will insert to back of colony. Example:</p>
+    <p><code style="color: brown">std::initializer_list&lt;int&gt; some_ints =
+    {4, 3, 2, 5};<br>
+    <br>
+    plf::colony&lt;int&gt; i_colony;<br>
+    i_colony.insert(some_ints);</code> </p>
+  </li>
+  <li><code>iterator emplace(Arguments &amp;&amp;...parameters) <b>C++11 and
+    upwards</b></code>
+    <p>Constructs new element directly within colony. Will insert the element
+    in a previously erased element slot if one exists, otherwise will insert to
+    back of colony. Returns iterator to location of inserted element.
+    "...parameters" are whatever parameters are required by the object's
+    constructor. Example:</p>
+    <p><code style="color: brown">class simple_class<br>
+    {<br>
+    private:<br>
+    int number;<br>
+    public:<br>
+    simple_class(int a_number): number (a_number) {};<br>
+    };<br>
+    <br>
+    plf::colony&lt;simple_class&gt; simple_classes;<br>
+    simple_classes.emplace(45); </code> </p>
+  </li>
+</ul>
+
+<h4>Erase</h4>
+
+<table border="1">
+  <tbody>
+    <tr>
+      <td>single element</td>
+      <td><code>iterator erase(const_iterator it)</code></td>
+    </tr>
+    <tr>
+      <td>range</td>
+      <td><code>void erase(const_iterator first, const_iterator
+      last)</code></td>
+    </tr>
+  </tbody>
+</table>
+<ul>
+  <li><code>iterator erase(const const_iterator it)</code>
+    <p>Removes the element pointed to by the supplied iterator, from the
+    colony. Returns an iterator pointing to the next non-erased element in the
+    colony (or to end() if no more elements are available). This must return an
+    iterator because if a colony group becomes entirely empty, it will be
+    removed from the colony, invalidating the existing iterator. Attempting to
+    erase a previously-erased element results in undefined behaviour (this is
+    checked for via an assert in debug mode). Example:</p>
+    <code style="color: brown">plf::colony&lt;unsigned int&gt;
+    data_colony(50);<br>
+    plf::colony&lt;unsigned int&gt;::iterator an_iterator;<br>
+    an_iterator = data_colony.insert(23);<br>
+    an_iterator = data_colony.erase(an_iterator);</code> </li>
+  <li><code>void erase(const const_iterator first, const const_iterator last)</code>
+    <p>Erases all elements of a given colony from <code>first</code> to the
+    element before the <code>last</code> iterator. This function is optimized
+    for multiple consecutive erasures and will always be faster than sequential
+    single-element erase calls in that scenario. Example:</p>
+    <code style="color: brown">plf::colony&lt;int&gt; iterator1 =
+    colony1.begin();<br>
+    colony1.advance(iterator1, 10);<br>
+    plf::colony&lt;int&gt; iterator2 = colony1.begin();<br>
+    colony1.advance(iterator2, 20);<br>
+    colony1.erase(iterator1, iterator2);</code> </li>
+</ul>
+
+<h4>Other functions</h4>
+<ul>
+  <li><code>bool empty()</code>
+    <p>Returns a boolean indicating whether the colony is currently empty of
+    elements.<br>
+    Example: <code style="color: brown">if (object_colony.empty())
+    return;</code></p>
+  </li>
+  <li><code>size_type size()</code>
+    <p>Returns total number of elements currently stored in container.<br>
+    Example: <code style="color: brown">std::cout &lt;&lt; i_colony.size()
+    &lt;&lt; std::endl;</code></p>
+  </li>
+  <li><code>size_type max_size()</code>
+    <p>Returns the maximum number of elements that the allocator can store in
+    the container.<br>
+    Example: <code style="color: brown">std::cout &lt;&lt; i_colony.max_size()
+    &lt;&lt; std::endl;</code></p>
+  </li>
+  <li><code>size_type capacity()</code>
+    <p>Returns total number of elements currently able to be stored in
+    container without expansion.<br>
+    Example: <code style="color: brown">std::cout &lt;&lt; i_colony.capacity()
+    &lt;&lt; std::endl;</code></p>
+  </li>
+  <li><code>size_type memory()</code>
+    <p>Returns the memory use of the container plus it's elements. Does not include memory dynamically-allocated by the elements themselves.<br>
+    Example: <code style="color: brown">std::cout &lt;&lt; i_colony.memory()
+    &lt;&lt; std::endl;</code></p>
+  </li>
+  <li><code>void shrink_to_fit()</code>
+    <p>Reduces container capacity to the amount necessary to store all
+    currently stored elements, consolidates elements and removes any erased locations. If the total number of elements is larger than the maximum group size, the resultant capacity will be equal to
+    <code>((total_elements / max_group_size) + 1) * max_group_size</code>
+    (rounding down at division). Invalidates all pointers, iterators and
+    references to elements within the container.<br>
+    Example: <code style="color: brown">i_colony.shrink_to_fit();</code></p>
+  </li>
+ <li><code>void reserve(const size_type reserve_amount)</code>
+    <p>Preallocates memory space sufficient to store the number of elements
+    indicated by <code>reserve_amount</code>. The maximum size for this number
+    is currently limited to the maximum group size of the colony and will be rounded down if
+    necessary. The default maximum group size is 65535 on the majority of
+    platforms. The default minimum reserve amount is the same as the current minimum group size, and will be rounded up silently if necessary. This function is useful from a performance perspective when the user is inserting elements singly, but the overall number of insertions is known in advance. By reserving, colony can forgo creating many smaller memory block allocations (due to colony's growth factor) and reserve a single memory block instead. Alternatively one coould simply change the default group sizes.<br>
+    Example: <code style="color: brown">i_colony.reserve(15);</code></p>
+  </li>
+  <li><code>void clear()</code>
+    <p>Empties the colony and removes all elements and groups.<br>
+    Example: <code style="color: brown">object_colony.clear();</code></p>
+  </li>
+  <li><code>void set_block_capacity_limits(const Skipfield_type min_group_size, const Skipfield_type max_group_size)</code>
+    <p>Changes the minimum and maximum internal group sizes, in terms of number
+    of elements stored per group. If the colony is not empty and either
+    min_group_size is larger than the smallest group in the colony, or
+    max_group_size is smaller than the largest group in the colony, the colony
+    will be internally copy-constructed into a new colony which uses the new
+    group sizes, invalidating all pointers/iterators/references. If trying to change group sizes with a colony storing a non-copyable/movable type, please use the reinitialize function instead.<br>
+    Example: <code style="color: brown">object_colony.set_block_capacity_limits(1000,
+    10000);</code></p>
+  </li>
+  <li><code>void set_minimum_block_capacity(const Skipfield_type
+    min_group_size)</code>
+    <p>Changes the minimum internal group size only, in terms of minimum number
+    of elements stored per group. If the colony is not empty and min_group_size
+    is larger than the smallest group in the colony, the colony will be
+    internally move-constructed (if possible) or copy-constructed into a new colony which uses the new minimum
+    group size, invalidating all pointers/iterators/references. If trying to change group sizes with a colony storing a non-copyable/movable type, please use the reinitialize function instead.<br>
+    Example: <code
+    style="color: brown">object_colony.set_minimum_block_capacity(100);</code></p>
+  </li>
+  <li><code>void set_maximum_block_capacity(const Skipfield_type
+    min_group_size)</code>
+    <p>Changes the maximum internal group size only, in terms of maximum number
+    of elements stored per group. If the colony is not empty and either
+    max_group_size is smaller than the largest group in the colony, the colony
+    will be internally move-constructed (if possible) or copy-constructed into a new colony which uses the new
+    maximum group size, invalidating all pointers/iterators/references. If trying to change group sizes with a colony storing a non-copyable/movable type, please use the reinitialize function instead.<br>
+    Example: <code
+    style="color: brown">object_colony.set_maximum_block_capacity(1000);</code></p>
+  </li>
+  <li><code>plf::limits get_block_capacity_limits() const no_except</code>
+    <p>Returns the current minimum and maximum block limits within the .min and .max fields of a limits struct.<br>
+    Example: <code style="color: brown">plf::limits temp = object_colony.get_block_capacity_limits();</code></p>
+  </li>
+  <li><code>void swap(colony &amp;source)</code>
+    <p>Swaps the colony's contents with that of <code>source</code>.<br>
+    Example: <code
+    style="color: brown">object_colony.swap(other_colony);</code></p>
+  </li>
+  <li><code>void sort();<br><br>
+  template &lt;class comparison_function&gt;<br>
+  void sort(comparison_function compare);</code>
+    <p>Sort the content of the colony. By default this compares the colony content using a less-than operator, unless the user supplies a comparison function (i.e. same conditions as std::list's sort function). Uses std::sort internally but will use another sort function if it's name (including namespace) is defined as the macro PLF_COLONY_SORT_FUNCTION before including the colony .h. Supplied sort function must take same parameters as std::sort.<br>
+    Example: <code style="color: brown">// Sort a colony of integers in ascending order:<br>
+	int_colony.sort();<br>
+	// Sort a colony of doubles in descending order:<br>
+	double_colony.sort(std::greater<double>());</code></p>
+  </li>
+
+  <li><code>void splice(colony &amp;source)</code>
+    <p>Transfer all elements from source colony into destination colony without invalidating pointers/iterators to either colony's elements (in other words the destination takes ownership of the source's memory blocks). After the splice, the source colony is empty. Splicing is much faster than range-moving or copying all elements from one colony to another. Colony does not guarantee a particular order of elements after splicing, for performance reasons; the insertion location of source elements in the destination colony is chosen based on the most positive performance outcome for subsequent iterations/insertions. For example if the destination colony is {1, 2, 3, 4} and the source colony is {5, 6, 7, 8} the destination colony post-splice could be {1, 2, 3, 4, 5, 6, 7, 8} or {5, 6, 7, 8, 1, 2, 3, 4}, depending on internal state of both colonies and prior insertions/erasures.</p>
+	<p>Note: If the minimum group size of the source is smaller than the destination, the destination will change it's minimum group size to match the source. The same applies for maximum group sizes (if source's is larger, the destination will adjust its).<br>
+    Example: <code style="color: brown">// Splice two colonies of integers together:<br>
+	colony&lt;int&gt; colony1 = {1, 2, 3, 4}, colony2 = {5, 6, 7, 8};<br>
+	colony1.splice(colony2);</code>
+  </li>
+
+
+
+
+  <li><code>colony &amp; operator = (const colony &amp;source)</code>
+    <p>Copy the elements from another colony to this colony, clearing this
+    colony of existing elements first.<br>
+    Example: <code style="color: brown">// Manually swap data_colony1 and
+    data_colony2 in C++03<br>
+    data_colony3 = data_colony1;<br>
+    data_colony1 = data_colony2;<br>
+    data_colony2 = data_colony3;</code></p>
+  </li>
+  <li><code>colony &amp; operator = (colony &amp;&amp;source) <b>C++11
+    only</b></code>
+    <p>Move the elements from another colony to this colony, clearing this
+    colony of existing elements first. Source colony is now empty and in a valid state (same as a new colony without any insertions), can be safely destructed or used in any regular way without problems.<br>
+    Example: <code style="color: brown">// Manually swap data_colony1 and
+    data_colony2 in C++11<br>
+    data_colony3 = std::move(data_colony1);<br>
+    data_colony1 = std::move(data_colony2);<br>
+    data_colony2 = std::move(data_colony3);</code></p>
+  </li>
+  <li><code>colony &amp; operator = (const std::initializer_list&lt;value_type&gt; il))</code>
+    <p>Copy the elements from an initializer list to this colony, clearing this
+    colony of existing elements first.</p>
+  </li>
+  <li><code>bool operator == (const colony &amp;source)</code>
+    <p>Compare contents of another colony to this colony. Returns a boolean as
+    to whether they are equal.<br>
+    Example: <code style="color: brown">if (object_colony == object_colony2)
+    return;</code></p>
+  </li>
+  <li><code>bool operator != (const colony &amp;source)</code>
+    <p>Compare contents of another colony to this colony. Returns a boolean as
+    to whether they are not equal.<br>
+    Example: <code style="color: brown">if (object_colony != object_colony2)
+    return;</code></p>
+  </li>
+  <li><code>iterator begin(), iterator end(), const_iterator cbegin(),
+    const_iterator cend()</code>
+    <p>Return iterators pointing to, respectively, the first element of the
+    colony and the element one-past the end of the colony (as per standard STL
+    guidelines).</p>
+  </li>
+  <li><code>reverse_iterator rbegin(), reverse_iterator rend(),
+    const_reverse_iterator crbegin(), const_reverse_iterator crend()</code>
+    <p>Return reverse iterators pointing to, respectively, the last element of
+    the colony and the element one-before the first element of the colony (as
+    per standard STL guidelines).</p>
+  </li>
+  <li><code>iterator get_iterator_from_pointer(const element_pointer_type
+    the_pointer) <b>(slow)</b></code>
+    <p>Getting a pointer from an iterator is simple - simply dereference it
+    then grab the address i.e. <code>"&amp;(*the_iterator);"</code>. Getting an
+    iterator from a pointer is typically not so simple. This function enables
+    the user to do exactly that. This is expected to be useful in the use-case
+    where external containers are storing pointers to colony elements instead
+    of iterators (as iterators for colonies have 3 times the size of an element
+    pointer) and the program wants to erase the element being pointed to or
+    possibly change the element being pointed to. Converting a pointer to an
+    iterator using this method and then erasing, is about 20% slower on average
+    than erasing when you already have the iterator. This is less dramatic than
+    it sounds, as it is still faster than all std:: container erasure times
+    which it is roughly equal to. However this is generally a slower,
+    lookup-based operation. If the lookup doesn't find a non-erased element
+    based on that pointer, it returns <code>end()</code>. Otherwise it returns
+    an iterator pointing to the element in question. For const pointers, use a const_cast when supplying the pointer to the function, and for const_iterator,
+	 simply supply a const_iterator for the return value. Example:</p>
+    <p><code style="color: brown">plf::colony&lt;a_struct&gt; data_colony;<br>
+    plf::colony&lt;a_struct&gt;::iterator an_iterator;<br>
+    a_struct struct_instance;<br>
+    an_iterator = data_colony.insert(struct_instance);<br>
+    a_struct *struct_pointer = &amp;(*an_iterator);<br>
+    iterator another_iterator =
+    data_colony.get_iterator_from_pointer(struct_pointer);<br>
+    if (an_iterator == another_iterator) std::cout &lt;&lt; "Iterator is
+    correct" &lt;&lt; std::endl;</code> </p>
+  </li>
+  <li><code>size_type get_index_from_iterator(const iterator/const_iterator
+    &amp;the_iterator) <b>(slow)</b></code>
+    <p>While colony is a container with unordered insertion (and is therefore
+    unordered), it still has a (transitory) order which changes upon any
+    erasure or insertion. <i>Temporary</i> index numbers are therefore
+    obtainable. These can be useful, for example, when creating a save file in
+    a computer game, where certain elements in a container may need to be
+    re-linked to other elements in other container upon reloading the save
+    file. Example:</p>
+    <p><code style="color: brown">plf::colony&lt;a_struct&gt; data_colony;<br>
+    plf::colony&lt;a_struct&gt;::iterator an_iterator;<br>
+    a_struct struct_instance;<br>
+    data_colony.insert(struct_instance);<br>
+    data_colony.insert(struct_instance);<br>
+    an_iterator = data_colony.insert(struct_instance);<br>
+    unsigned int index = data_colony.get_index_from_iterator(an_iterator);<br>
+    if (index == 2) std::cout &lt;&lt; "Index is correct" &lt;&lt;
+    std::endl;</code> </p>
+  </li>
+  <li><code>size_type get_index_from_reverse_iterator(const reverse_iterator/const_reverse_iterator &amp;the_iterator)
+    <b>(slow)</b></code>
+    <p>The same as get_index_from_iterator, but for reverse_iterators and
+    const_reverse_iterators. Index is from front of colony (same as iterator),
+    not back of colony. Example:</p>
+    <p><code style="color: brown">plf::colony&lt;a_struct&gt; data_colony;<br>
+    plf::colony&lt;a_struct&gt;::reverse_iterator r_iterator;<br>
+    a_struct struct_instance;<br>
+    data_colony.insert(struct_instance);<br>
+    data_colony.insert(struct_instance);<br>
+    r_iterator = data_colony.rend();<br>
+    unsigned int index =
+    data_colony.get_index_from_reverse_iterator(r_iterator);<br>
+    if (index == 1) std::cout &lt;&lt; "Index is correct" &lt;&lt;
+    std::endl;</code> </p>
+  </li>
+  <li><code>iterator get_iterator_from_index(const size_type index)
+    <b>(slow)</b></code>
+    <p>As described above, there may be situations where obtaining iterators to
+    specific elements based on an index can be useful, for example, when
+    reloading save files. This function is basically a shorthand to avoid
+    typing <code>"iterator it = colony.begin(); colony.advance(it,
+    50);"</code>. Example:</p>
+    <p><code style="color: brown">plf::colony&lt;a_struct&gt; data_colony;<br>
+    plf::colony&lt;a_struct&gt;::iterator an_iterator;<br>
+    a_struct struct_instance;<br>
+    data_colony.insert(struct_instance);<br>
+    data_colony.insert(struct_instance);<br>
+    iterator an_iterator = data_colony.insert(struct_instance);<br>
+    iterator another_iterator = data_colony.get_iterator_from_index(2);<br>
+    if (an_iterator == another_iterator) std::cout &lt;&lt; "Iterator is
+    correct" &lt;&lt; std::endl;</code> </p>
+  </li>
+  <li><code>reverse_iterator get_reverse_iterator_from_index(const size_type index)
+    <b>(slow)</b></code>
+    <p>As above, but returns a reverse_iterator instead.</p>
+   </li>
+  <li><code>allocator_type get_allocator()</code>
+    <p>Returns a copy of the allocator used by the colony instance.</p>
+  </li>
+  <li><code>raw_memory_block_pointers * data()</code>
+    <p>Returns a pointer to a dynamically-allocated struct containing arrays of pointers to both the element memory blocks, the skipfield memory blocks, and an array of integers describing the capacity of each memory block, and an integer describing how many memory blocks there are.
+	 For more details, read the code. This function can be used for situations when using SIMD. It is useless outside of that context. In all cases a non-zero value at a given index in a skipfield memory block indicates an erased/skipped element node at the same index in the corresponding element memory block.<br>
+	 Note: The full capacity of the final element memory block is not supplied, instead the capacity which has been used so far (eg. 7 out of 10) is provided. Otherwise any code using this function might mistakenly read uninitialized element memory space in the final block.</p>
+	 </p>
+  </li>
+</ul>
+<!-- <h3>Non-member functions</h3> -->
+<ul>
+  <li><code>template &lt;iterator_type&gt; void advance(iterator_type iterator,
+    const distance_type distance)</code>
+    <p>Increments/decrements the iterator supplied by the positive or negative
+    amount indicated by <i>distance</i>. Speed of incrementation will almost
+    always be faster than using the ++ operator on the iterator for increments
+    greater than 1. In some cases it may approximate O(1). The iterator_type
+    can be an iterator, const_iterator, reverse_iterator or
+    const_reverse_iterator.<br>
+    Example: <code style="color: brown">colony&lt;int&gt;::iterator it =
+    i_colony.begin();<br>
+    i_colony.advance(it, 20); </code></p>
+  </li>
+  <li><code>template &lt;iterator_type&gt; iterator_type next(iterator_type &amp;iterator, const distance_type distance)</code>
+    <p>Creates a copy of the iterator supplied, then increments/decrements this
+    iterator by the positive or negative amount indicated by
+    <i>distance</i>.<br>
+    Example: <code style="color: brown">colony&lt;int&gt;::iterator it =
+    i_colony.next(i_colony.begin(), 20);</code></p>
+  </li>
+  <li><code>template &lt;iterator_type&gt; iterator_type prev(iterator_type &amp;iterator, const distance_type distance)</code>
+    <p>Creates a copy of the iterator supplied, then decrements/increments this
+    iterator by the positive or negative amount indicated by
+    <i>distance</i>.<br>
+    Example: <code style="color: brown">colony&lt;int&gt;::iterator it2 =
+    i_colony.prev(i_colony.end(), 20);</code></p>
+  </li>
+  <li><code>template &lt;iterator_type&gt; difference_type distance(const iterator_type &amp;first, const iterator_type &amp;last)</code>
+    <p>Measures the distance between two iterators, returning the result, which
+    will be negative if the second iterator supplied is before the first
+    iterator supplied in terms of it's location in the colony.<br>
+    Example: <code style="color: brown">colony&lt;int&gt;::iterator it =
+    i_colony.next(i_colony.begin(), 20);<br>
+    colony&lt;int&gt;::iterator it2 = i_colony.prev(i_colony.end(), 20);<br>
+    std::cout "Distance: " i_colony.distance(it, it2) std::endl;</code></p>
+  </li>
+</ul>
+
+<h3>Non-member functions</h3>
+<ul>
+  <li><code>void swap(colony &amp;A, source &amp;B)</code>
+    <p>Swaps colony A's contents with that of colony B (assumes both colonies
+    have same element type, allocator type, etc). <br>
+    Example: <code style="color: brown">swap(object_colony, other_colony);</code> </p>
+  </li>
+</ul>
+
+
+<h2><a id="benchmarks"></a>Benchmarks</h2>
+
+<p>Benchmark results for colony v5.01 under GCC 8.1 x64 on an Intel Xeon E3-1241 (Haswell) are <a href="benchmarks_haswell_gcc.htm">here</a>.</p>
+<p>Old benchmark results for colony v3.87 under GCC 5.1 x64 on an Intel E8500 (Core2) are <a href="benchmarks_core2_gcc.htm">here</a>,<br>
+and under MSVC 2015 update 3 on an Intel Xeon E3-1241 (Haswell) are <a href="benchmarks_haswell_msvc.htm">here</a>. There is no commentary for the MSVC results.</p>
+
+
+<h2><a id="faq"></a>Frequently Asked Questions</h2>
+<ol>
+  <li><h4>TLDR, what is a colony?</h4>
+    <p>A combination of a linked-list of increasingly-large memory blocks with
+    metadata. Part of this metadata is the head of a free-list of erased elements within that group, and also a 'next' pointer to the next group which has erased element locations which can be re-used. Another part of the metadata is a low complexity jump-counting skipfield, which is used to skip over erased elements during iteration in O(1) amortised time. The end result's a bidirectional, unordered C++ template data container which maintains positive performance characteristics while ensuring pointer stability to non-erased container elements.</p>
+  </li>
+  <li><h4>Where is it worth using a colony in place of other std::
+    containers?</h4>
+    <p>As mentioned, it is worthwhile for performance reasons in situations
+    where the order of container elements is not important and:</p>
+    <ol type="a">
+      <li>Insertion order is unimportant</li>
+      <li>Insertions and erasures to the container occur frequently in
+        performance-critical code, <i><b>and</b></i> </li>
+      <li>Links to non-erased container elements may not be invalidated by
+        insertion or erasure.</li>
+    </ol>
+    <p>Under these circumstances a colony will generally out-perform other
+    std:: containers. In addition, because it never invalidates pointer
+    references to container elements (except when the element being pointed to
+    has been previously erased) it may make many programming tasks involving
+    inter-relating structures in an object-oriented or modular environment much
+    faster, and could be considered in those circumstances.</p>
+  </li>
+  <li><h4>What are some examples of situations where a colony might improve
+    performance?</h4>
+    <p>Some ideal situations to use a colony: cellular/atomic simulation,
+    persistent octtrees/quadtrees, game entities or destructible-objects in a
+    video game, particle physics, anywhere where objects are being created and
+    destroyed continuously. Also, anywhere where a vector of pointers to
+    dynamically-allocated objects or a std::list would typically end up being
+    used in order to preserve object references but where order is
+    unimportant.</p>
+  </li>
+  <li><a id="timecomplexity"></a><h4>What are the time complexities for general operations?</h4>
+
+  <p>In most cases the time complexity of operations results from the fundamental requirements of the container itself, not the implementation. In some cases, such as erase complexity, this can change a little based on the implementation, but the change is minor.</p>
+
+	<h5>Insert (single): O(1) amortised</h5>
+	<p>One of the requirements of colony is that pointers to non-erased elements stay valid regardless of insertion/erasure within the container. For this reason the container must use multiple memory blocks. If a single memory block were used, like in a std::vector, reallocation of elements would occur when the container expanded (and the elements were copied to a larger memory block). Hence, colony will insert into existing memory blocks when able, and create a new memory block when all existing memory blocks are full.</p>
+	<p>Because colony (by default) has a growth pattern for new memory blocks, the number of insertions before a new memory block is required increases as more insertions take place. Hence the insertion time complexity is O(1) amortised.</p>
+
+	<h5>Insert (multiple): O(N) amortised</h5>
+	<p>This follows the same principle - there will occasionally be a need to create a new memory block, but since this is infrequent it is O(N) amortised.</p>
+
+	<h5>Erase (single): O(1) amortised (as of v5.00)</h5>
+	<p>Generally speaking erasure is a simple matter of destructing the element in question and updating the skipfield. Since we started using the low complexity jump-counting pattern (v5.00) instead of the high complexity jump-counting skipfield pattern, that skipfield update is always O(1). However, when a memory block becomes empty of non-erased elements it must be freed to the OS (or stored for future insertions, depending on implementation) and removed from the colony's sequence of memory blocks. It it was not, we would end up with non-O(1) amortised iteration, since there would be no way to predict how many empty memory blocks there would be between the current memory block being iterated over, and the next memory block with non-erased (active) elements in it. Since removal of memory blocks is infrequent the time complexity becomes O(1) amortised.</p>
+
+	<h5>Erase (multiple): O(N) amortised for non-trivially-destructible types, for trivially-destructible types between O(1) and O(N) amortised depending on range start/end (approximating O(log n) average)</h5>
+	<p>In this case, where the element is non-trivially destructible, the time complexity is O(N) amortised, with infrequent deallocation necessary from the removal of an empty memory block as noted above. However where the elements are trivially-destructible, if the range spans an entire memory block at any point, that block and it's skipfield can simply be removed without doing any individual writes to it's skipfield or individual destruction of elements, potentially making this a O(1) operation.</p>
+	<p>In addition (when dealing with trivially-destructible types) for those memory blocks where only a portion of elements are erased by the range, if no prior erasures have occurred in that memory block you can erase that range in O(1) time, as there will be no need to check within the range for previously erased elements, and the low complexity jump-counting pattern only requires two skipfield writes to indicate a range of skipped nodes. The reason you would need to check for previously erased elements within that portion's range is so you can update the metadata for that memory block to accurately reflect how many non-erased elements remain within the block. If that metadata is not present, there is no way to ascertain when a memory block is empty of non-erased elements and hence needs to be removed from the colony. The reasoning for why empty memory blocks must be removed is included in the Erase(single) section, above.</p>
+	<p>However in most cases the erase range will not perfectly match the size of all memory blocks, and with typical usage of a colony there is usually some prior erasures in most memory blocks. So for example when dealing with a colony of a trivially-destructible type, you might end up with a tail portion of the first memory block in the erasure range being erased in O(N) time, the second and intermediary memory block being completely erased and freed in O(1) time, and only a small front portion of the third and final memory block in the range being erased in O(N) time. Hence the time complexity for trivially-destructible elements approximates O(log n) on average, being between O(1) and O(N) depending on the start and end of the erasure range.</p>
+
+	<h5>std::find: O(n)</h5>
+	<p>This relies on basic iteration so is O(N).</p>
+
+	<h5>splice: O(1)</h5>
+	<p>Colony only does full-container splicing, not partial-container splicing (use range-insert with std::move to achieve the latter, albiet with the loss of pointer validity to the moved range). When splicing the memory blocks from the source colony are transferred to the destination colony without processing the individual elements or skipfields, inserted after the destination's final block. However if there are unused element memory spaces at the back of the destination container (ie. the final memory block is not full), the skipfield nodes corresponding to those empty spaces must be altered to indicate that these are skipped elements. Luckily as of v5.00 this is also a O(1) operation, hence the overall operation is O(1).</p>
+
+	<h5>Iterator operators ++ and --: O(1) amortised</h5>
+	<p>Generally the time complexity is O(1), as the skipfield pattern used (<a href="matt_bentley_-_the_low_complexity_jump-counting_pattern.pdf">current</a>) must allow for skipping of multiple erased elements. However every so often iteration will involve a transistion to the next/previous memory block in the colony's sequence of blocks, depending on whether we are doing ++ or --. At this point a read of the next/previous memory block's corresponding skipfield is necessary, in case the first/last element(s) in that memory block are erased and hence skipped. So for every block transition, 2 reads of the skipfield are necessary instead of 1. Hence the time complexity is O(1) amortised.</p>
+	<p>Skipfields must be per-block and independent between memory blocks, as otherwise you would end up with a vector for a skipfield, which would need a range erased every time a memory block was removed from the colony (see notes under Erase above), and reallocation to larger skipfield memory block when the colony expanded. Both of these procedures carry reallocation costs, meaning you could have thousands of skipfield nodes needing to be reallocated based on a single erasure (from within a memory block which only had one non-erased element left and hence would need to be removed from the colony). This is unacceptable latency for any fields involving high timing sensitivity (all of <a href="https://lists.isocpp.org/mailman/listinfo.cgi/sg14/">SG14</a>).</p>
+
+	<h5>begin()/end(): O(1)</h5>
+	<p>For any implementation these should generally be stored as member variables and so returning them is O(1).</p>
+
+	<h5>advance/next/prev: between O(1) and O(n), depending on current iterator location and distance. Average approximates O(log N).</h5>
+	<p>The reasoning for this is similar to that of Erase(multiple), above. Memory blocks which are completely traversed by the increment/decrement distance can be skipped in O(1) time by reading the metadata for the block which details the number of non-erased elements in the block. If the current iterator location is not at the very beginning of a memory block, then the distance within that block will need to be processed in O(N) time, unless no erasures have occurred within that block, in which case the skipfield does not need to be checked and traversal is simply a matter of pointer arithmetic and checking the distance between the current iterator position and the end of the memory block, which is a O(1) operation.</p>
+	<p>Similarly for the final block involved in the traversal (if the traversal spans multiple memory blocks!) if no erasures have occurred in that memory block pointer arithmetic can be used and the procedure is O(1), otherwise it is O(N) (++ iterating over the skipfield). We can therefore say that the overall time complexity for these operations might approximate O(log N), while being between O(1) and O(N) amortised respectively.</p>
+</li>
+
+  <li><h4>Is it similar to a deque?</h4>
+    <p>A deque is reasonably dissimilar to a colony - being a double-ended
+    queue, it requires a different internal framework. It typically uses a
+    vector of memory blocks, whereas the colony implementation uses a linked
+    list of memory blocks, essentially. A deque can't technically use a linked
+    list of memory blocks because it will make some random_access iterator
+    operations (e.g. + operator) non-O(1). In addition, being random-access container, having a growth factor for memory blocks in a deque is problematic (not impossible though).</p>
+    <p>A deque and colony have no comparable performance characteristics except
+    for insertion (assuming a good deque implementation). Deque erasure
+    performance varies wildly depending on the implementation compared to
+    std::vector, but is generally similar to vector erasure performance. A
+    deque invalidates pointers to subsequent container elements when erasing
+    elements, which a colony does not.</p>
+  </li>
+  <li><h4>What are the thread-safe guarantees?</h4>
+    <p>Unlike a std::vector, a colony can be read from and inserted into at the
+    same time (assuming different locations for read and write), however it
+    cannot be iterated over and written to at the same time. If we look at a
+    (non-concurrent implementation of) std::vector's thread-safe matrix to see
+    which basic operations can occur at the same time, it reads as follows
+    (please note push_back() is the same as insertion in this regard):</p>
+
+    <table border="1" cellspacing="3">
+      <tbody>
+        <tr>
+          <td><b>std::vector</b></td>
+          <td>Insertion</td>
+          <td>Erasure</td>
+          <td>Iteration</td>
+          <td>Read</td>
+        </tr>
+        <tr>
+          <td>Insertion</td>
+          <td>No</td>
+          <td>No</td>
+          <td>No</td>
+          <td>No</td>
+        </tr>
+        <tr>
+          <td>Erasure</td>
+          <td>No</td>
+          <td>No</td>
+          <td>No</td>
+          <td>No</td>
+        </tr>
+        <tr>
+          <td>Iteration</td>
+          <td>No</td>
+          <td>No</td>
+          <td>Yes</td>
+          <td>Yes</td>
+        </tr>
+        <tr>
+          <td>Read</td>
+          <td>No</td>
+          <td>No</td>
+          <td>Yes</td>
+          <td>Yes</td>
+        </tr>
+      </tbody>
+    </table>
+    <p>In other words, multiple reads and iterations over iterators can happen
+    simultaneously, but the potential reallocation and pointer/iterator
+    invalidation caused by insertion/push_back and erasure means those
+    operations cannot occur at the same time as anything else. </p>
+    <p>Colony on the other hand does not invalidate pointers/iterators to
+    non-erased elements during insertion and erasure, resulting in the
+    following matrix: </p>
+
+    <table border="1" cellspacing="3">
+      <tbody>
+        <tr>
+          <td><b>plf::colony</b></td>
+          <td>Insertion</td>
+          <td>Erasure</td>
+          <td>Iteration</td>
+          <td>Read</td>
+        </tr>
+        <tr>
+          <td>Insertion</td>
+          <td>No</td>
+          <td>No</td>
+          <td>No</td>
+          <td>Yes</td>
+        </tr>
+        <tr>
+          <td>Erasure</td>
+          <td>No</td>
+          <td>No</td>
+          <td>No</td>
+          <td>Mostly*</td>
+        </tr>
+        <tr>
+          <td>Iteration</td>
+          <td>No</td>
+          <td>No</td>
+          <td>Yes</td>
+          <td>Yes</td>
+        </tr>
+        <tr>
+          <td>Read</td>
+          <td>Yes</td>
+          <td>Mostly*</td>
+          <td>Yes</td>
+          <td>Yes</td>
+        </tr>
+      </tbody>
+    </table>
+    <p><span style="font-size: 10pt">* Erasures will not invalidate iterators
+    unless the iterator points to the erased element. </span></p>
+    <p>In other words, reads may occur at the same time as insertions and
+    erasures (provided that the element being erased is not the element being
+    read), multiple reads and iterations may occur at the same time, but
+    iterations may not occur at the same time as an erasure or insertion, as
+    either of these may change the state of the skipfield which's being
+    iterated over. Note that iterators pointing to end() may be invalidated by
+    insertion.</p>
+    <p>So, colony could be considered more inherently thread-safe than a
+    (non-concurrent implementation of) std::vector, but still has some areas
+    which would require mutexes or atomics to navigate in a multithreaded
+    environment.</p>
+  </li>
+  <li><h4>Any pitfalls to watch out for?</h4>
+    <ol type="1">
+      <li>Because erased-element memory locations will be reused by
+        <code>insert()</code> and <code>emplace()</code>, insertion position is
+        essentially random unless no erasures have been made, or an equal
+        number of erasures and insertions have been made.</li>
+      <li>For architectural reasons (multiple empty groups cannot be present), reserve
+        can currently only reserve a number of elements up to the maximum bit-depth of
+        the skipfield type.</li>
+        <li>Due to implementation reasons it is possible to assign (or construct) a iterator from a const_iterator, which is not really good const behaviour (only assigning/constructing a const_iterator from an iterator is good const practice). However preventing this results in errors in all versions of MSVC, so it has been ignored.</li>
+    </ol>
+  </li>
+  <li><h4>Am I better off storing iterators or pointers to colony elements?</h4>
+    <p>Testing so far indicates that storing pointers and then using
+    <code>get_iterator_from_pointer()</code> when or if you need to do an erase
+    operation on the element being pointed to, yields better performance than
+    storing iterators and performing erase directly on the iterator. This is
+    simply due to the size of iterators (3 pointers in width).</p>
+  </li>
+  <li><h4>Any special-case uses?</h4>
+    <p>In the special case where many, many elements are being continually
+    erased/inserted in realtime, you might want to experiment with limiting the
+    size of your internal memory groups in the constructor. The form of this is
+    as follows: <br>
+    <code>plf::vector&lt;object&gt; a_vector;<br>
+    a_vector.change_group_sizes(500, 5000);</code> <br>
+    where the first number is the minimum size of the internal memory groups
+    and the second is the maximum size. Note these can be the same size,
+    resulting in an unchanging group size for the lifetime of the colony
+    (unless <code>change_group_sizes</code> is called again or operator = is
+    called).</p>
+    <p>One reason to do this is that it is slightly slower to obtain an element
+    location from the list of groups-with-erasures (subsequently utilising that group's free list of erased locations), than it is to insert a new element to the end of the colony (the default behaviour when
+    there are no previously-erased elements). If there are any erased elements
+    in the colony, the colony will recycle those memory locations, unless the
+    entire group is empty, at which point it is freed to memory. So if a group
+    size is large and many, many erasures occur but the group is not completely
+    emptied, iterative performance may suffer due to large memory gaps between any two non-erased elements. In
+    that scenario you may want to experiment with benchmarking and limiting the
+    minimum/maximum sizes of the groups, and find the optimal size for a
+    particular use case.</p>
+    <p>Please note that the the fill, range and initializer-list constructors
+    can also take group size parameters, making it possible to construct filled
+    colonies using custom group sizes.</p>
+  </li>
+  <li><h4>What is colony's Abstract Data Type (ADT)?</h4>
+    <p>Though I am happy to be proven wrong I suspect colony is it's own
+    abstract data type. While it is similar to a multiset or bag, those utilize
+    key values and are not sortable (by means other than automatically by key
+    value). Colony does not utilize key values, is sortable, and does not
+    provide the sort of functionality one would find in a bag (e.g. counting the
+    number of times a specific value occurs). Some have suggested similarities
+    to deque - but as described earlier the three core aspects of colony
+    are:</p>
+    <ol type="a">
+      <li>A multiple-memory-block based allocation pattern which allows for the
+        removal of memory blocks when they become empty of elements.</li>
+      <li>A skipfield to indicate erasures instead of reallocating elements,
+        the iteration of which should typically not necessitate the use of
+        branching code.</li>
+      <li>A mechanism for recording erased element locations to allow for reuse
+        of erased element memory space upon subsequent insertion.</li>
+    </ol>
+    <p>The only aspect out of these which deque also shares is a
+    multiple-memory-block allocation pattern - not a strong association. As a
+    result, deques do not guarantee pointer validity to non-erased elements
+    post insertion or erasure, as colony does. Similarly if we look at a
+    multiset, an unordered one could be implemented on top of a colony by
+    utilising a hash table (and would in fact be more efficient than most
+    non-flat implementations) but the fact that there is a necessity to add
+    something to make it a multiset (to take and store key values) means colony
+    is not an multiset. </p>
+  </li>
+  <li><h4>Exception Guarantees?</h4>
+    <p>All operations which allocate memory have strong exception guarantees
+    and will roll back if an exception occurs, except for operator = which has
+    a basic exception guarantee (see below). For colony, iterators are bounded
+    by asserts in debug mode, but unbounded in release mode, so it is possible
+    for an incorrect use of an iterator (iterating past end(), for example) to
+    trigger an out-of-bounds memory exception.</p>
+    <p>The reason why operator = only has a basic guarantee is they do not
+    utilize the copy-swap idiom, as the copy-swap idiom significantly increases
+    the chance of any exception occurring - this is because the most common way
+    an exception tends to occur during a copy operation is due to a lack of
+    memory space, and the copy-swap idiom doubles the memory requirement for a
+    copy operation by constructing the copy before destructing the original
+    data.</p>
+	 <p>This is doubly inappropriate in game development, which colony has
+    been initially for, where memory constraints are often critical and the
+    runtime lag from memory spikes can cause detrimental game performance. So
+    in the case of colony if a non-memory-allocation-based exception occurs
+    during copy, the = operators will have already destructed their data, so
+    the containers will be empty and cannot roll back - hence they have a basic
+    guarantee, not a strong guarantee.</p>
+  </li>
+  <li><h4>Iterators not following rule of zero?</h4>
+    <p>It was found under GCC and clang that the high-modification scenario
+    benchmarks suffered a 11% overall performance loss when iterator copy and
+    move constructors/operators where not explicitly defined, possibly because
+    GCC did not know to vectorize the operations without explicit code or
+    because the compiler implemented copy/swap idiom instead of simply copying
+    directly. No performance gain was found under any tests when removing the
+    copy and move constructors/operators.</p>
+  </li>
+  <li><h4><a name="remove_when_empty"></a>Why must groups be removed when
+    empty?</h4>
+    <p>Two reasons:</p>
+    <ol type="a">
+      <li>Standards compliance: if groups aren't removed then <code>++</code>
+        and <code>--</code> iterator operations become O(random) in terms of
+        time complexity, making them non-compliant with the C++ standard. At
+        the moment they are O(1) amortised, typically one update for both
+        skipfield and element pointers, but two if a skipfield jump takes the
+        iterator beyond the bounds of the current group and into the next
+        group. But if empty groups are allowed, there could be anywhere between
+        1 and <code>size_type</code> empty groups between the current element
+        and the next. Essentially you get the same scenario as you do when
+        iterating over a boolean skipfield. It would be possible to move these to the back of the colony as trailing groups, but this may create performance issues if any of the groups are not at their maximum size (see below).</li>
+      <li>Performance: iterating over empty groups is slower than them not
+        being present, cache wise - but also if you have to allow for empty
+        groups while iterating, then you have to include a while loop in every
+        iteration operation, which increases cache misses and code size. The strategy of removing groups when they become empty also removes (assuming randomised erasure patterns) smaller groups from the colony before larger groups, which has a net result of improving iteration, because with a larger group, more iterations within the group can occur before the end-of-group condition is reached and a jump to the next group (and subsequent cache miss) occurs. Lastly, pushing to the back of a colony is faster than recycling memory
+        locations as each insertion occurs in subsequent similar memory location (which is cache-friendlier) and also less computational work is necessary. If a group is removed it's recyclable memory locations are
+        also removed from re-use, hence subsequent insertions are more likely to be pushed to the back of the colony.</li>
+    </ol>
+  </li>
+  <li><h4>Why use three pointers for iterators rather than a group pointer,
+    single index and then dereferencing?</h4>
+    <p>It's faster. In attempting on two separate occasions to switch to an
+    index-based iterator approach, utilising three separate pointers was
+    consistently faster.</p>
+  </li>
+  <li><h4>Group sizes - what are they based on, how do they expand, etc</h4>
+    <p>Group sizes start from the either the
+    default minimum size (8 elements, larger if the type stored is small) or an
+    amount defined by the programmer (with a minimum of 3 elements). Subsequent
+    group sizes then increase the <i>total capacity</i> of the colony by a
+    factor of 2 (so, 1st group 8 elements, 2nd 8 elements, 3rd 16 elements, 4th
+    32 elements etcetera) until the maximum group size is reached. The default
+    maximum group size is the maximum possible number that the skipfield
+    bitdepth is capable of representing
+    (std::numeric_limits&lt;skipfield_type&gt;::max()). By default the
+    skipfield bitdepth is 16 so the maximum size of a group is 65535 elements.
+    However the skipfield bitdepth is also a template parameter which can be
+    set to any unsigned integer - unsigned char, unsigned int, Uint_64, etc.
+    Unsigned short (guaranteed to be at least 16 bit, equivalent to C++11's
+    uint_least16_t type) was found to have the best performance in real-world
+    testing due to the balance between memory contiguousness, memory waste and
+    the restriction on skipfield update time complexity. Initially the design
+    also fitted the use-case of gaming better (as games tend to utilize lower
+    numbers of elements than some other fields), and that was the primary
+    development field at the time.</p>
+  </li>
+  <li><h4>Why store a size member for each group when this can be obtained via
+    <code>reinterpret_cast&lt;element_pointer_type&gt;(skipfield) -
+    elements</code>?</h4>
+    <p>Because it's faster. While it can be obtained that way, having it
+    precalculated gives a small but significant benefit. And it's only an
+    additional 16 bits per group under 32-bit code (under 64-bit code there is typically no additional size increase, due to struct padding and the size of pointers).</p>
+  </li>
+  <li><h4><a name="simd"></a>Can a colony be used with SIMD instructions?</h4>
+    <p>No and yes. Yes if you're careful, no if you're not.<br>
+	 On platforms which support scatter and gather operations you can use colony with SIMD as much as you want, using gather to load elements from disparate or sequential locations, into a SIMD register. Then use scatter to push the post-SIMD-process values elsewhere after.<br>
+	 On platforms which require elements to be contiguous in memory for SIMD processing, this is more complicated. When you have a bunch of erasures in a colony, there's no guarantee that your objects will be contiguous in memory, even though they are sequential during iteration. Some of them may also be in different memory blocks to each other. In these situations if you want to use SIMD with colony, you must do the following:</p>
+    <ul>
+    <li>Set your minimum and maximum group sizes to multiples of the width of your SIMD instruction. If it supports 8 elements at once, set the group sizes to multiples of 8.</li>
+    <li>Either never erase from the colony, or:<br>
+    	<ol>
+    	<li>Shrink-to-fit after you erase (will invalidate all pointers to elements within the colony).</li>
+    	<li>Only erase from the back or front of the colony, and only erase elements in multiples of the width of your SIMD instruction e.g. 8 consecutive elements at once. This will ensure that the end-of-memory-block boundaries line up with the width of the SIMD instruction, provided you've set your min/max block sizes as above.</li>
+    	</ol>
+   </li>
+   </ul>
+	<p>Generally if you want to use SIMD without gather/scatter, it's probably preferable to use a vector or an array.</p>
+   </li>
+</ol>
+<br>
+<br>
+
+
+<h2><a id="version"></a>Version history</h2>
+<ul>
+<li>2020-10-25: v5.43 - Removal of problematic asserts in operators -- and ++. Change of name from approximate_memory_usage() to memory().</li>
+<li>2020-09-25: v5.42 - Correction to technically undefined behaviour under C++98/03.</li>
+<li>2020-09-21: v5.41 - Correction to splice.</li>
+<li>2020-09-19: v5.40 - Correction to non-member swap, should've been in namespace std.</li>
+<li>2020-09-17: v5.39 - Removal of destructor calls within sort() since all element locations inevitably get written to in the container/array so any necessary destructor calls for non-trivial objects will be handled by the move/copy operators of that element type.</li>
+<li>2020-09-16: v5.38 - Removal of unnecessary branch checks in sort(), thanks to sentinel reduction, courtesy of <a href="https://github.com/Morwenn">github user morwenn</a>.</li>
+<li>2020-08-16: v5.37 - Re-included sort(), using the indiesort variant (higher performance for larger types and significantly-reduced memory usage). Uses std::sort internally but will use another sort function if it's name (including namespace) is defined as the macro PLF_COLONY_SORT_FUNCTION before including the colony .h. Supplied sort function must take same parameters as std::sort.</li>
+<li>2020-08-15: v5.36 - Correction for edge case within range erase. Correction to range insert in compilers without type traits.</li>
+<li>2020-07-07: v5.35 - Range-insert/constructor optimization now available in C++11-and-above modes.</li>
+<li>2020-06-27: v5.34 - Fixes to distance, set_block_capacity_limits. Reduction to compiler switches.</li>
+<li>2020-05-03: v5.33 - Minor optimisation to operator ==. Some internal iterator usage changed to const_iterator.</li>
+<li>2020-04-26: v5.32 - Correction to &lt;=&gt; iterator operator, some static_cast's to avoid additional MSVC warnings. Fix for minor regression in prev version.</li>
+<li>2020-04-24: v5.31 - Shifted some code out of the insert functions into a separate function, which improves performance for mixed-code scenarios like the test suite, while providing no performance detriment in the higher complexity tests. Fix to small problem with conversion warnings in fill-insert.</li>
+<li>2020-04-16: v5.29 - Correction to operator = && when pointers as supplied by an allocator are non-trivial. Update some comments. Optimization for fill-insert with non-trivial types.</li>
+<li>2020-04-13: v5.28 - Fixed an issue with prior range insert optimisation which would've caused reallocation of elements and iterator invalidation under some scenarios. Minor optimisation to reinitialize() based on most common use-case.</li>
+<li>2020-04-10: v5.27 - Corrections to test suite. Added [[nodiscard]] to empty().</li>
+<li>2020-04-08: v5.26 - Added default-value fill constructor (eg. 'colony&lt;int&gt;(14)' to create an int colony with 14 default-constructed ints). Changed names of change_group_sizes, get_group_sizes, change_minimum_group_size and change_maximum_group_size to: set_block_capacity_limits, get_block_capacity_limits, set_minimum_block_capacity and set_maximum_block_capacity. This is to bring the implementation more in line with the C++ standards proposal and to make the naming more independent of implementation, and more correct. Removed 'const_iterator get_iterator_from_pointer(const const_pointer)', as users can manually cast the pointers themselves to 'iterator get_iterator_from_pointer(const pointer)', and the return type will automatically cast from iterator to const_iterator if a const_iterator is used to receive the return value. This also brings the implementation more in line with current C++ standards. Added get_reverse_iterator_from_pointer() and get_reverse_iterator_from_index(). Corrected missing macro undef in previous version. Changed get_raw_memory_block_pointers() to data(), to be more in line with std library.</li>
+<li>2020-03-22: v5.25 - Added colony operator = for std::initializer_list. Updated noexcept conditions for swap and move operations. Added const_pointer overload for get_iterator_from_pointer(). Added code to automatically reserve necessary capacity in range/initializer_list insert/construct/operator =, if the range in question uses random_access iterators. Added spaceship operator (why) for compilers which support it.</li>
+<li>2019-11-27: v5.24 - Removed unneeded assert for iterator operator = when assigning between const and non-const iterators. Added operator = and copy constructor for assigning/constructing between const and non-const reverse iterators. Increased ability for reverse_iterators (const and non-const) to take assignment from regular const/non-const iterators.</li>
+<li>2019-11-26: v5.23 - Correction to iterator operator = when assigning between const and non-const iterators. Correction to begin() and end() to support pre-C++11 semantics ie. can return const_iterator as an overload. Which in turn allows colony to function with eric neibler's ranges implementation.</li>
+<li>2019-11-18: v5.22 - Correction to edge-case in advance(), slight speed increases to iterator operator ++, insert, emplace. Changes to remove warnings in test suite. Overall 1% performance improvement in general use benchmarking, 4-5% performance improvement in general use benchmarking when dealing with low numbers of elements and low amounts of modification. Improvements partially based on advice about pointer aliasing from Elliot Goodrich.</li>
+<li>2019-08-13: v5.21 - Fix for MSVC2019 in permissive mode incorrectly reporting a warning of use of std::allocator instead of std::allocator_traits</li>
+<li>2019-08-01: v5.20 - Edited skipfield pattern to enable parallel conversion to SIMD-gather mask (erased skipfield nodes in middle of skipblocks will always be non-zero now). Added function get_raw_memory_block_pointers() to enable users to supply elements directly to SIMD-gather/scatter operations using the skipfield as a mask (skipfield will require conversion to specific SIMD instruction set format, which can also be accomplished in SIMD, in parallel). Tests added to test suite for both non-trivial types, and the get_raw_memory_block_pointers() function. Corrections to fill-insert for aligned types. Minor correction to avoid type safety warning in GCC under C++03 and using "-Werror=sign-conversion".</li>
+<li>2019-06-17: v5.11 - Explicitly specified some implicit type promotion conversions in order to deal with errors when using GCC with "-Werror=conversion". Added non-copyable type test to test suite.</li>
+<li>2019-06-11: v5.10 - Correction to reserve() semantics. Reserve() also will no longer assert that reserve amount is within bounds of maximum and minimum group sizes, and will silently round the value down or up accordingly. Please consult the documentation to understand the current limitations of reserve() for colony.</li>
+<li>2019-04-15: v5.09 - Constexpr added to type traits 'if' blocks and some other scenarios, for compilers which support it - including MSVC2017 with std:c++17 switch. This fixes some issues for movable-but-not-copyable elements, and creates performance benefits in some scenarios. May also speed up compile times slightly.</li>
+<li>2019-04-12: v5.08 - shrink_to_fit(), reserve(), change_group_sizes(), change_minimum_group_size() and change_maximum_group_size() are now valid operations for element types which are move-constructible but not copy-constructible, when type traits are supported by compiler. These operations will also be faster for non-trivially-copyable-but-trivially-movable types, if reallocation of existing elements is triggered.</li>
+<li>2019-03-19: v5.07 - Removed unnecessary const casts (to avoid GCC warning) and added newline at end of file (to avoid clang warning).</li>
+<li>2019-02-28: v5.06 - Added static_cast's to work around GCC's -Werror=sign-conversion warnings.</li>
+<li>2019-01-30: v5.05 - Bizarre minor redundancy removal. Add post-move assignment test to test suite.</li>
+<li>2019-01-16: v5.04 - Correction to library detection features to include type traits for libc++. Removed support for plf::timsort, added support for gfx::timsort (differences between plf and gfx version were not substantive enough to justify maintaining a fork of the original code).</li>
+<li>2018-11-16: v5.03 - Correction to max_size() for use with allocator_traits and to be in line with C++20.</li>
+<li>2018-10-28: v5.02 - Optimization to move assignment - this also improves regular assignment, sort, splice, swap, change_group_sizes, shrink_to_fit &amp; reserve.</li>
+<li>2018-10-08: v5.01 - Comment corrections, blank() no longer differentiates based on compiler (re-testing revealed this is best strategy across compilers). Correction: included header for offsetof.</li>
+<li>2018-10-02: v5.00 - Change of skipfield type from high-complexity jump-counting skipfield (previously known as 'advanced jump-counting') to low complexity skipfield (previously known under working title of 'Bentley pattern'). Change of erased-element-memory-location storage mechanism from free-list of erased element locations, to free-list of blocks of consecutive erased element locations. Resultant procedural change means that all singular insert/emplace and erase operations now have O(1) time complexity, while multi-insert is O(n) and multi-erase is O(n) for non-trivially-destructible elements, ~O(log n) for trivially-destructible elements (see time complexity in the <a href="#timecomplexity">faq</a>). In addition iteration will generally be faster in situations where elements are being inserted and erased a lot, as skipblocks can no longer get split up into multiple skipblocks by insert, mean there are less overall 'jumps' during subsequent iteration. Also since insertion and erasure can no longer result an an unpredictable skipfield update, the container is much more suitable for extremely-low-latency environments. &lt;, &gt;, &lt;= &amp; &gt;= iterator operators and operations which use them e.g. range-erase in debug mode, no longer throw exceptions if supplied with begin() and end() iterators of an empty colony. Other corrections to range-erase. Optimization to fill-insert. More extensive testing for range-erase and fill-insert added to test suite. Platform-specific code removed for iterator operator ++ (default now best across all platforms). Range-erase and fill-insert 10% faster overall in tests. General-use-case testing up to 10% faster on core2 (4.5% faster on average).</li>
+<li>2018-07-12: v4.62 - Optimization to swap for when the allocator supplies non-trivial-but-movable pointers.</li>
+<li>2018-07-07: v4.61 - Optimization to swap. Updating of some CPU-specific tests. Comment correction/updates.</li>
+<li>2018-07-06: v4.60 - Multiple corrections to nothrow_constructible checks under insert/emplace. Addition of second emplace test to test suite. Added void * casts to deal with GCC 8.1's garbage warning messages around memset. Update/addition of comments. Minor update to benchmark suite.</li>
+<li>2018-06-27: v4.59 - Change of sort dereferencer function to allow for non-const sort functions (with internal state for example).</li>
+<li>2018-06-19: v4.58 - Corrections to test suite compiler feature detection macros, change reverse_iterator constructor type to non-explicit, minor optimization to insert for non-trivially-constructible types, minor code-comment/code cleanup.</li>
+<li>2018-05-09: v4.57 - Mitigated NULL == 0 warning for clang, fixed compiler feature definitions for clang + libstdc++, thanks to bluebear94.</li>
+<li>2018-05-02: v4.56 - Same optimization for GCC &amp; clear/splice/etc now applied to other compilers generically.</li>
+<li>2018-04-28: v4.55 - Postcondition of source colony for move-assignment/construction is the same as an empty colony now (i.e. you can use it normally post-move without undefined behaviours). Minor optimisation to move-assignment/construction and several other functions (splice, clear, range-erase) as a result under C++11 and above (when allocator does not supply smart pointers). Minor optimisation to swap; the original C++03 code was faster than the C++11 move-swap code under C++11. Minor optimisations to distance, advance. Code comment cleanups. It is now valid behaviour to call range-erase with two equal iterators i.e. an empty range.</li>
+<li>2018-04-13: v4.51 - Mistake in NOEXCEPT_MOVE_ASSIGNMENT compiler feature macro, fixed.</li>
+<li>2018-04-02: v4.50 - Stack-based erasure-recording system replaced with per-memory-block index-based free list + erasures-groups-list structure. Resultant speed up of 10% in high-modification general-usage benchmarks, 17% reduction in code size, and reduced memory usage. This also makes erase exception-safe (no allocations due to no stack) unless destructor of object throws exception (i.e. fails to close a file lock, or whatever) or an invalid/uninitialized iterator is supplied to function. Reversion of insert from function call to emplace, back to a separate function - as this was causing copy-construction on non-trivial types, leading to additional temporaries and severe performance drop on large types. General code cleanup and renaming. Corrections to compiler feature support detection. Corrections to some noexcept function statuses. Minor optimisations for C++03/98 and in general. Minor optimisation to operator = under c++11 and upwards. Support for over-aligned types.</p>
+<li>2018-01-05: v4.14 - Minor optimization to insert.</li>
+<li>2017-11-15: v4.13 - One noexcept change, fill-insert correction/optimization, minor optimizations and code comment cleanup.</li>
+<li>2017-11-1: v4.12 - Correction to no-exception compile-time checking for insert/etc. get_iterator_from_index() now templated, supports multiple index types. This also reduces codegen when both this function and advance() are unused. Change to some inline hinting.</li>
+<li>2017-10-11: v4.11 - Codegen reduction for insert, move-insert for compilers with variadic parameter support.</li>
+<li>2017-10-03: v4.10 - Rollback of a previous insert optimization due to potential for overflow with extremely large numbers of elements and extremely large numbers of erasures. Improvement to range-erase performance.</li>
+<li>2017-09-26: v4.09 - Large single-insertion performance improvement for small scalar types. Other minor optimizations to splice, range-erase and advance. False-negative removal in test suite for 32-bit compilers.</li>
+<li>2017-09-16: v4.07 - Improved fill-insert performance for trivially_copy_constructible types under C++11/C++14/etc. Avoid generating exception try-catch code for nothrow-constructible types. Correction to reserve() - people were probably calling it with size_type's, causing it to truncate/overflow. Minor correction to type traits use in sort(). Minor optimization to operator --.</li>
+<li>2017-09-11: v4.06 - Corrections to fill-insert. Optimization for reserve() followed by fill-insert. Removal of return values from fill-insert, range-insert and initializer-list insert (no point, unordered insertion, always).</li>
+<li>2017-08-31: v4.05 - void splice(colony &amp;source) added to colony. This means you can move all elements from one colony into another colony of the same type without invalidating pointers or iterators to the source elements. Splicing is also much faster than range-moving the elements. Splice does not guarantee appending to the destination colony - the insert location of source groups is chosen based on the most positive overall performance outcome for subsequent iteration and insertion.</li>
+<li>2017-08-26: v4.01 - Same optimization as v4 applied for skylake/kabylake CPUs under GCC and -march=native. Unlike haswell, this is associated with a small decrease (~1%) to unordered use-case performance, but the same 15-26% performance improvement for iteration tests. Further feedback from external testing welcome. Redundant iterator parameter removed (allocator). C++14-specific const/non iterator comparisons (e.g. if (reverse_iterator != const_reverse_iterator)) now available for all compilers and C++ versions. Correction to benchmark suite.</li>
+<li>2017-07-26: v4.00 - Up to 7% iteration performance improvement on Core2 processors and/or under MSVC, 15%-26% iteration performance improvement on pre-"kaby lake", post-"Westmere" Core i processors (haswell, broadwell etc) processors under GCC (with -march=native enabled). Amount of improvement depends on number of elements. Overall 2% improvement in modification use-case testing on all platforms. Correction to fill-constructor and initialization-list constructor. Thanks to Phil Williams and Jason Turner for testing for me on alt processors!</li>
+  <li>2017-06-21: v3.95 - Corrected support for GCC v5.x. Correction to test suite under GCC versions > v5. Correction to distance() for reverse iterators.</li>
+  <li>2017-06-01: v3.94 - Minor optimizations and test suite cleanup.</li>
+  <li>2017-05-21: v3.93 - Added sort(). Colonies can now be sorted as you would with a list, with or without a supplied comparison function (less-than if without). Removed MSVC warnings at level 4, ignoring those which're obviously compiler bugs. More support for non-gcc compilers using gcc libraries or libc++.</li>
+  <li>2017-05-11: v3.91 - Additional type safety check on stack consolidate. Move assignment now follows C++17 noexcept rule. Correction to missing undef's at end of header.</li>
+  <li>2017-05-11: v3.90 - Minor optimizations to initializer-list insert and copy constructors. Emplace availability correction for some compilers. Corrections to shrink_to_fit() and reserve() (will not longer go below minimum group size). Minor optimizations to operator = and c++03 swap. Other minor code improvements.</li>
+  <li>2017-05-06: v3.89 - Minor correction to noexcept statuses. Correction to test suite under C++03.</li>
+  <li>2017-03-28: v3.88 - Correction to emplace. Corrections to default constructor to allow for empty initialization lists. Some standards
+    compliance updates and corrections to noexcept statuses. skipfield_type is now a publicly-accessable member typedef. get_group_sizes() is now available. Allocator-extended copy and move constructors added. get_allocator() added. swap(colony &amp;A, colony &amp;B) is now non-member and non-friend.</li>
+  <li>2017-02-08: Update and corrections to benchmark code and test
+  results.</li>
+  <li>2016-12-10: v3.87 - Optimized and corrected range erase. Documentation
+    updated.</li>
+  <li>2016-11-19: v3.86 - Performance improvements for low numbers of scalar
+    types. Minor optimizations for fill-constructor and initializer-list
+    constructor. Corrections to advance.</li>
+  <li>2016-11-12: v3.83 - Minor optimizations. Edge-case corrections for
+    advance functions and copy constructor. Optimizations to
+    get_index_from_iterator, get_iterator_from_pointer, distance, advance.
+    Advance now correctly bounds to rbegin and rend for reverse iterators.
+    Warning removal for test suite.</li>
+  <li>2016-11-1: v3.81 - Optimizations to insert functions. Corrections to
+    fill-insert/fill-construct functions. Minor correction to internal stack
+    copy constructor. Some function and comment tidyup. Moved referencer test
+    code out from plf_bench.h to individual test files due to MSVC's forward
+    declaration bug (referencer tests not possible with MSVC for this reason).
+    Possible edge-case out-of-bounds memory access for insert removed.
+    Benchmarks updated.</li>
+  <li>2016-10-27: v3.80 - Further optimizations. Removed a potential memory
+    leak which would only occur upon exception-based state rollback within
+    insert functions. Update to benchmark suite, addition of packed_deque
+    container and associated tests.</li>
+  <li>2016-10-15: v3.76 - Removed potential memory leak in internal stack
+    mechanism.</li>
+  <li>2016-10-14: v3.75 - Added get_index_from_reverse_iterator(). Further
+    optimization (and one minor correction) of the reduced_stack storage
+    mechanism , leading to an 8% performance increase in general_use benchmarks
+    for small structs. Additional minor optimization for C++03. Some code
+    comment tidyup.</li>
+  <li>2016-10-10: v3.73 - change_group_size functions no longer copy-construct
+    into a new colony unless the stack is not empty, and either min_group_size
+    is larger than the smallest group in the stack, or max_group_size is
+    smaller than the largest group in the stack. Correction to
+    change_group_sizes code (was clearing erased locations unnecessarily).
+    Reinitialize function added, which supports the changing of group sizes for
+    colonies of non-copy-constructible element types. Emplace changed to no
+    longer require move semantics, which enables the use of
+    non-move-constructible/non-copy-constructible types with colony (example:
+    anything containing a std::mutex). Minor correction to colony test suite
+    under C++03.</li>
+  <li>2016-10-04: v3.72 - minor fix to erase.</li>
+  <li>2016-10-03: v3.71 - Replaced all but one vectorizing skipfield update
+    with memmove ops for greater performance. Colony is no longer dependent on
+    plf::stack, now has it's own reduced-functionality internal structure.
+    TLDR, slightly faster, slightly faster build time &amp; slightly less
+    memory use. Colony and stack are no longer friends :( (aw). Updated
+    documentation. Stack separated out of colony package and test suite and
+    vice-versa. Added functions to convert element pointer to iterator, and to
+    convert iterator to index and vice-versa. Removed pointer-based erase
+    function (use get_iterator_from_pointer() instead and call erase() with the
+    resultant iterator). Minor update to distance, advance, prev and next
+    functions. Benchmark suite updated.</li>
+  <li>2016-09-02: v3.61 - Slight performance improvement for general-use-cases
+    for colony, small performance/usability improvements in benchmark suite.
+    Tweak for MSVC2010 performance. Correction to stack emplace.</li>
+  <li>2016-08-24: v3.6 - 8% speedup on iteration, vs v3.55, for colony
+    with larger-than-scalar types. Performance increases and minor corrections
+    in benchmark suite.</li>
+  <li>2016-08-20: v3.55 - Updates to benchmark suite - now uses a faster
+    xorshift-type rand generator and a fast_mod function, test differences
+    between containers more obvious now. Memory approximation also now outside
+    of main loops, test cases updated for general_use test. Entirely new
+    test-case function. Minor performance enhancements to
+    insert/erase/operator++ for colony + code tidy-up. Minor warning removal
+    for test suite.</li>
+  <li>2016-08-04: v3.51 - Correction to move-insert courtesy of Peet Nick.
+    Removal of end-block edge-case scenario code, as it was found to be of such
+    low statistical significance as to be useless. The fix increased memory use
+    in the scenario of the edge case which might be it's own problem in most
+    scenarios. To get around the edge case, if it occurs in a given context, an
+    allocator approach would be most appropriate. Update to benchmark
+  suite.</li>
+  <li>2016-07-19: v3.5 - Colony now accepts a template parameter for the
+    skipfield type. This enables the use of, for example, unsigned char as the
+    skipfield type. The bitdepth of the unsigned integer also defines the
+    default maximum size of colony groups. The benchmark suite has been updated
+    with memory measurements for the general_use tests. General_use tests
+    changed to percentage-based tests. Internal erased location stack now
+    stores only element pointers, not full iterators. Storing just the pointer
+    and having to reconstruct the iterator slows down reinsertion after an
+    erase, but speeds up the erase itself and results in an overall performance
+    improvement, as well as less memory consumption. Slight improvement for
+    fill-insert. Sanity-checks for range-insert and initializer-list-insert
+    implemented. Minor fix to C++03 support in benchmark suite.</li>
+  <li>2016-07-4: v3.35 - Another compliance fix for benchmark suite in clang,
+    courtesy of Arthur O'Dwyer.</li>
+  <li>2016-07-3: v3.34 - Minor warning removal for test suite. Performance
+    improvement for colony edge-case scenario where a single element is
+    inserted and then erased repeatedly, and where the insertion point happens
+    to be at the end of a memory block.</li>
+  <li>2016-07-1: v3.33 - Empty destructors/constructors removed in iterators.
+    Small compliancy fixes in both colony and benchmark suite. Thanks to Arthur
+    O'Dwyer for this update.</li>
+  <li>2016-06-25: v3.31 - Colony iterators no longer inherit from std::iterator
+    and implement the required typedefs themselves. Code tidyup and minor
+    changes. Default of 1 implemented for prev/next.</li>
+  <li>2016-06-17: v3.30 - Correction to colony range constructor. Corrections
+    to advance() asserts.</li>
+  <li>2016-06-15: v3.29 - Support for stateful allocators added, to both colony
+    and stack. More generic solution applied for preventing calls for
+    fill-insert to be matched by range insert template.</li>
+  <li>2016-06-14: v3.25 - Edge-case corrections to colony's clear(),
+    range-insert and fill-insert functions. Minor performance improvement in
+    erase edge-case. Removed older (colony-specific) range insert. Simplified
+    constructors.</li>
+  <li>2016-06-12: v3.22 - Range, fill and initializer-list based insert()'s and
+    constructors now implemented in colony. Bugfix for Microsoft compilers.
+    Warnings fix for clang. Reinitialize functions removed, replaced with
+    change_group_sizes(), change_minimum_group_size() and
+    change_maximum_group_size().</li>
+  <li>2016-06-11: v3.19 - Minor bugfix to plf::stack.</li>
+  <li>2016-06-9: v3.18 - Corrections to colony and stack C++11 typedefs. Some
+    code tidyup. Minor code corrections. Simplified reserve() and
+    shrink_to_fit() functions. Added trim_trailing_groups() function to stack.
+    Minor performance improvements.</li>
+  <li>2016-05-31: v3.16 - Corrections to colony and stack reserve(). Some code
+    tidyup. Correction to test suite.</li>
+  <li>2016-05-30: v3.15 - Colony and stack are now compliant with C++11 and
+    C++14 <a
+    href="https://en.cppreference.com/w/cpp/named_req/Container">container</a>
+    concepts. Vectorized some erasure and insertion operations resulting in
+    better overall performance in some scenarios. Corrected edge case in
+    reverse iteration operator ++. All iterators now bounded by asserts in
+    debug mode. Correction to capacity functions.</li>
+  <li>2016-05-26: v3.14 - Added swap (std::swap worked fine without it, mainly
+    required for standards compliance, also is exception-safe) and max_size()
+    functions to stack and colony.</li>
+  <li>2016-05-24: v3.13 - erase(element_pointer) added to colony. This enables
+    erasure via a colony element's pointer, rather than it's iterator. Slightly
+    slower than iterator-based erasure as a lookup has to be done for the
+    colony element's group. Update to test suite.</li>
+  <li>2016-05-19: v3.11 - Fix for colony shrink_to_fit(), added special case to
+    stack copy constructor for when source size &gt; max_group_size, colony and
+    stack constructors now explicit. Update to test suite.</li>
+  <li>2016-05-12: v3.10 - Both stack and colony no longer preallocate upon
+    construction, only upon first insertion. Minor assert bugfix in colony.
+    shrink_to_fit(), reserve() and capacity() functions added to both classes.
+    Some code cleanup, corrections for C++03 and minor optimizations.</li>
+  <li>2016-04-28: v3.05 - Removal of compiler-specific iteration code,
+    resulting in 8% speedup for larger-than-scalar type iteration, 6% slowdown
+    for scalar-type iteration, under GCC x64. MSVC unaffected by change.
+    Addition of benchmark suite. Correction to plf_nanotimer under
+  linux/bsd.</li>
+  <li>2016-04-16: v3.04 - Corrections to reinitialize asserts. Added
+    bound-checking asserts to advance/next/prev implementations.</li>
+  <li>2016-03-26: v3.03 - Correction to operator = on colony. Replaced
+    SDL2/SDL_Timer in benchmarks with plf_nanotimer, a cross-platform
+    ~nanosecond-precision timer. Correction to end() and begin() overloads -
+    internal begin/end iterator could previously be altered by user activity,
+    in some cases. Correction to .next functions.</li>
+  <li>2016-03-24: v3.02 - Small performance improvements. Fix for demo for
+    regular SDL2 usage. Duplication of macros from plf_stack.h to plf_colony.h
+    to fix issue when plf_stack.h is also used within project separately from
+    plf_colony.h. </li>
+  <li>2016-02-23: v3.01 - Colony now uses a <a
+    href="http://em.rdcu.be/wf/click?upn=KP7O1RED-2BlD0F9LDqGVeSPyQHezub7M4gGFa4NTPPTU-3D_ih77hK-2FwXUNPXOClzbShNQsKzXRuUomlRdQ1DjaMsrpnUBwwtbFTp5VEo6fdTXEOm5aVQpvVZ28aaMucmOmTG7j6bqKdutLSZ5s-2FvVOpi0U-2BRUm-2BokLgfiyljrkOnlzzohhddyytFQ6xbOHnaSP-2BiryryBzyk0-2FcqHJHqWla0UjauVoYm2aWi5no-2F91Tum6XKjVqwSLtk3SZQBA-2BuYbfglhC7NGb-2F0qoV47pMMnoV-2Fo-3D">jump-counting
+    skipfield</a> instead of a boolean field, which mitigates worst-case
+    scenario performance by factors of ten. Iterators now bidirectional (but
+    include &gt; &lt; &gt;= and &lt;= operators) instead of random-access, and
+    compliant with C++-specification's time-complexity requirements (all
+    operations O(1) amortised). +=, -=, - and + iterator operators relegated to
+    advance, distance, next and prev functions under colony. There is greater
+    compliance with allocators. Group size now limited to 65535 max for colony,
+    to decrease memory wastage and improve skipfield performance. Various
+    bugfixes and corrections. plf::stack storage limit no longer 32-bit uint
+    max (relies on allocator to supply correct size_type). Added worst-case and
+    best-case scenario tests to colony benchmark, and added std::stack
+    comparison to plf::stack benchmark. Benchmarks yet to be updated in
+  docs.</li>
+  <li>2015-11-20: v2.34 - Correction to clear() and reinitialize()
+  functions.</li>
+  <li>2015-11-17: v2.33 - Minor bugfix for GCC versions &lt; 5.</li>
+  <li>2015-11-2: v2.32 - Minor bugfix for non-trivial pointers and non-trivial
+    stack contents.</li>
+  <li>2015-10-31: v2.31 - Allocators which supply non-trivial pointers are now
+    supported. Large macros removed. Some code cleanup and minor performance
+    gain.</li>
+  <li>2015-10-10: v2.26 - 'back()' in plf::stack changed to 'top()' to better
+    reflect std:: library stack implementation function titles. Added standard
+    container typedefs to colony and stack. Colony iterators now return
+    element_allocator::pointer and element_allocator::reference instead of
+    value_type * and value_type &amp;. Some minor code cleanup.</li>
+  <li>2015-10-6: v2.24 - Bugfix for C++03 with x64 compilers. Minor
+    corrections, performance improvements for C++03 compilers.</li>
+  <li>2015-10-4: v2.21 - Improved gcc x64 iteration. std::find now working with
+    reverse_iterator. reverse_iterator function corrections, performance
+    improvements. Hintless allocators under C++11 now supported. Allocation now
+    uses allocator_traits under C++11.</li>
+  <li>2015-9-30: v2.13 - Fixed performance regression with small primitive
+    types and MS VCC. Small bugfixes.</li>
+  <li>2015-9-28: v2.12 - Added const_iterator, const_reverse_iterator, .cbegin,
+    .cend, .crbegin, .crend. Some small bugfixes.</li>
+  <li>2015-9-27: v2.00 - Larger performance improvements, particularly for
+    small primitive type storage. Corrections to exception handling and EBCO.
+    ".insert" replaces ".add" (realised there is precedence for
+    non-position-based insert via unordered_map/unordered_set). Added postfix
+    iterator increment and decrement. Zero-argument ".add()" and ".push()"
+    function overloads removed (same thing achievable with
+    "colony.insert(value_type());" and "stack.push(value_type());". Many
+    bugfixes and general code cleanup.</li>
+  <li>2015-9-15: v1.79 - Empty base class allocator optimisations and smaller
+    optimisation.</li>
+  <li>2015-9-1: v1.77 - Some small bugfixes.</li>
+  <li>2015-8-30: v1.76 - Now exception-safe. Also fixed C++03 regression
+  bug.</li>
+  <li>2015-8-22: v1.75 - Iterators more compliant and now work with std::find
+    and should work with other std:: algorithm functions. Native find functions
+    removed. (iterator - iterator) and (iterator + iterator) support added
+    (relatively useless to end-users, but required by some std::
+  algorithms).</li>
+  <li>2015-8-15: v1.73 - Correction to noexcept/nothrow use under some
+    non-c++11 compilers. Some rvalue functions corrected.</li>
+  <li>2015-8-3: v1.72 - Added noexcept to more functions.</li>
+  <li>2015-7-20: v1.71 - Small correction to demo, changed a data member name
+    in demo to remove conflict in MSVC 2015.</li>
+  <li>2015-7-13: v1.70 - Added deque comparisons to performance tests - this
+    was necessary because many people were making comparisons between colonies
+    and deques, without understanding what a deque is and how it
+  performs...</li>
+  <li>2015-6-21: v1.69 - Code tidy-up.</li>
+  <li>2015-6-16: v1.67 - Correction to VS2013/VS2010 support: move semantics
+    and other C++11 facets enabled for MS compilers. Support for VS2012, VS2015
+    and later added. Performance bottleneck in destructors in debug mode fixed.
+    General cleanup. Some microoptimisations. Macros now better named to avoid
+    conflicts.</li>
+  <li>2015-5-30: v1.60 - Correction to add function, microoptimizations.</li>
+  <li>2015-5-29: v1.53 - Performance improvement. Corrected move constructor
+    and reverse_iterator function semantics.</li>
+  <li>2015-5-28: v1.52 - Small correction.</li>
+  <li>2015-5-26: v1.51 - Small performance improvement. In demo, including
+    SDL.h caused some weird behaviour with timer when used, changed to
+    SDL_timer.h. Benchmarks to be updated.</li>
+  <li>2015-5-25: v1.50 - Microoptimizations, small improvements, fixed crash in
+    demo where memory would overflow when compiled to x86 without LAA.</li>
+  <li>2015-5-21: v1.43 - Minor performance improvements for release mode,
+    larger improvements for debug mode.</li>
+  <li>2015-5-16: v1.42 - Some demo corrections.</li>
+  <li>2015-5-16: v1.41 - Fixed demo on pre-C++11 compilers. Minor fixes in code
+    and corrections in tests. Performance improvements.</li>
+  <li>2015-5-11: v1.40 - Improved iterator ++ speed and Add speed, added
+    real-world OO performance tests to demo. Added max group-size tuning (max
+    number of elements per group).</li>
+  <li>2015-5-6: v1.34 - Improved iterator ++ speed under VC2010 and GCC
+  x64.</li>
+  <li>2015-5-5: v1.33 - Improved erase, and some small performance tweaks.</li>
+  <li>2015-5-4: v1.32 - Minor fixes.</li>
+  <li>2015-5-3: v1.31 - Resolved all current known edge-case crashes. Improved
+    stack pop performance.</li>
+  <li>2015-4-26: v1.20 - Found and resolved several edge-case bugs. Improved +,
+    -, += and -= iterator operator performance tremendously.</li>
+  <li>2015-4-18: v1.10 - Allocators fully supported now. Improved performance.
+    Some bugfixes. Added std::iterator trait to iterator. Added large struct
+    tests to demo. Improved realism of array tests.</li>
+  <li>2015-4-13: v1.00 - Allocators now largely supported (some work to do).
+    Erasure bug fixed. First proper release.</li>
+  <li>2015-4-9: v0.983 - Updated demo to be more realistic for array usage and
+    to run all tests sequentially.</li>
+  <li>2015-4-6: v0.982 - Bugfixes, speedup, added find functions.</li>
+  <li>2015-4-2: v0.98 - First release</li>
+</ul>
+
+<p><a id="contact"></a>Contact: <img alt="footer" src="footer.gif"><br>
+plf:: library and this page Copyright (c) 2019, Matthew Bentley</p>
+</body>
+</html>
